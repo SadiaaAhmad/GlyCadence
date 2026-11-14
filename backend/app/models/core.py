@@ -125,13 +125,23 @@ class Patient(Base):
             name="ck_patients_diabetes_type",
         ),
         CheckConstraint(
-            "retention_policy IN ('365_days', 'indefinite_until_revoked', 'research_archive')",
+            "retention_policy IN ('30_days', '90_days', '180_days', '365_days', 'custom_days', "
+            "'indefinite_until_revoked', 'research_archive', 'dataset_license_bound')",
             name="ck_patients_retention_policy",
         ),
     )
 
 
 class AuditLog(Base):
+    """Immutable append-only audit log.
+
+    Note: ``actor_user_id`` and ``patient_id`` are stored as immutable historical
+    UUID references (no cascading/SET NULL foreign keys) so that deleting expired
+    patient records or test accounts never mutates existing audit rows.
+    Non-sensitive operational context is stored in ``context_metadata`` so rows
+    remain interpretable even after parent entities are removed.
+    """
+
     __tablename__ = "audit_logs"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -146,6 +156,7 @@ class AuditLog(Base):
     resource_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     request_id: Mapped[str] = mapped_column(String(128), nullable=False)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    context_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     __table_args__ = (
