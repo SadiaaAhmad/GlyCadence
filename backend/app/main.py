@@ -5,7 +5,10 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.auth import router as auth_router
 from app.api.health import router as health_router
+from app.api.patients import router as patients_router
+from app.api.tracking import router as tracking_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -52,3 +55,6 @@ async def unhandled_exception_handler(_: Request, exc: Exception) -> JSONRespons
 
 
 app.include_router(health_router, prefix="/api/v1")
+app.include_router(auth_router, prefix="/api/v1")
+app.include_router(patients_router, prefix="/api/v1")
+app.include_router(tracking_router, prefix="/api/v1")

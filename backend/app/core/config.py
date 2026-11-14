@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO")
 
     database_url: str | None = Field(default=None)
+    jwt_secret_key: str = Field(default="dev-only-insecure-fallback-change-in-env")
+    jwt_algorithm: str = Field(default="HS256")
+    jwt_access_token_expire_minutes: int = Field(default=20)
+    jwt_refresh_token_expire_days: int = Field(default=7)
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"]
     )

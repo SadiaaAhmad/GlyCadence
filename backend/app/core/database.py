@@ -3,13 +3,18 @@ from collections.abc import Generator
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
 MIN_POSTGRES_MAJOR_VERSION = 15
+
+
+class Base(DeclarativeBase):
+    """Shared SQLAlchemy 2.0 declarative base for all 15 GlyCadence tables."""
+    pass
 
 _engine: Engine | None = None
 _session_factory: sessionmaker[Session] | None = None
