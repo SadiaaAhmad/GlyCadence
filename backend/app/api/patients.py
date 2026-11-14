@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, status
@@ -37,6 +37,11 @@ def onboard_patient(
         consent_granted_at=datetime.now(timezone.utc),
         retention_policy=payload.retention_policy,
         retention_days=payload.retention_days,
+        retention_expires_at=(
+            datetime.now(timezone.utc) + timedelta(days=payload.retention_days)
+            if payload.retention_policy == "365_days" and payload.retention_days is not None
+            else None
+        ),
         source_dataset="app_user",
     )
     db.add(patient)

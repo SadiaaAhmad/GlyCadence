@@ -46,6 +46,7 @@ class UserSession(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     refresh_token_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    previous_refresh_token_hash: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     access_jti: Mapped[str] = mapped_column(String(128), unique=True, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -103,6 +104,8 @@ class Patient(Base):
     consent_granted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retention_policy: Mapped[str] = mapped_column(String(64), nullable=False, default="365_days")
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True, default=365)
+    retention_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_dataset: Mapped[str] = mapped_column(String(64), nullable=False, default="app_user")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -133,10 +136,10 @@ class AuditLog(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True), nullable=True, index=True
     )
     patient_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("patients.id", ondelete="SET NULL"), nullable=True, index=True
+        UUID(as_uuid=True), nullable=True, index=True
     )
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(64), nullable=False)

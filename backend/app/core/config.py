@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 ROOT_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
@@ -38,6 +38,19 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [origin.strip() for origin in value.split(",") if origin.strip()]
         return value
+
+    @model_validator(mode="after")
+    def validate_jwt_secret_for_env(self) -> "Settings":
+        env = self.app_env.strip().lower()
+        if env not in {"development", "dev", "test"} and (
+            not self.jwt_secret_key
+            or self.jwt_secret_key == "dev-only-insecure-fallback-change-in-env"
+            or len(self.jwt_secret_key) < 32
+        ):
+            raise ValueError(
+                "JWT_SECRET_KEY must be set to a strong secret (>=32 chars) outside development/test"
+            )
+        return self
 
 
 @lru_cache

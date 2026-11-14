@@ -17,6 +17,9 @@ def _cleanup_users_and_patients(emails: list[str], patient_ids: list[str]) -> No
         for pid in patient_ids:
             p = db.get(Patient, uuid.UUID(pid))
             if p:
+                p.retention_expires_at = None
+                p.retention_policy = "365_days"
+                db.flush()
                 db.delete(p)
         for email in emails:
             u = db.query(User).filter(User.email == email).one_or_none()

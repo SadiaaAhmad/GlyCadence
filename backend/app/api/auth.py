@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.audit import record_audit_event
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.core.rate_limit import rate_limit_auth
 from app.core.security import (
     bearer_scheme,
     create_access_token,
@@ -31,7 +32,12 @@ from app.schemas.auth import (
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit_auth(max_requests=10, window_seconds=60))],
+)
 def register_user(
     payload: RegisterRequest,
     db: Annotated[Session, Depends(get_db)],
@@ -54,7 +60,11 @@ def register_user(
     return user
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    dependencies=[Depends(rate_limit_auth(max_requests=10, window_seconds=60))],
+)
 def login_user(
     payload: LoginRequest,
     request: Request,
@@ -104,10 +114,36 @@ def login_user(
 @router.post("/refresh", response_model=TokenResponse)
 def refresh_session(
     payload: RefreshRequest,
+    request: Request,
     db: Annotated[Session, Depends(get_db)],
 ) -> TokenResponse:
     now = datetime.now(timezone.utc)
     token_hash = hash_token(payload.refresh_token)
+
+    # Detect replay of an already-rotated refresh token
+    replayed_session = db.execute(
+        select(UserSession).where(UserSession.previous_refresh_token_hash == token_hash)
+    ).scalar_one_or_none()
+    if replayed_session is not None:
+        if replayed_session.revoked_at is None:
+            replayed_session.revoked_at = now
+        record_audit_event(
+            db,
+            action="revoke_token",
+            resource_type="user_session",
+            actor_user_id=replayed_session.user_id,
+            resource_id=replayed_session.access_jti,
+            request=request,
+        )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={
+                "code": "refresh_token_replayed",
+                "message": "Refresh token replay detected; session has been revoked.",
+            },
+        )
+
     session = db.execute(
         select(UserSession).where(
             UserSession.refresh_token_hash == token_hash,
@@ -131,6 +167,7 @@ def refresh_session(
 
     new_access_token, new_jti, access_expires_at = create_access_token(user.id, user.role)
     new_refresh_token = generate_refresh_token()
+    session.previous_refresh_token_hash = session.refresh_token_hash
     session.access_jti = new_jti
     session.refresh_token_hash = hash_token(new_refresh_token)
     db.commit()

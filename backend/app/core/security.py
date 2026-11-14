@@ -115,7 +115,7 @@ def require_patient_access(
     - research_participant: read-only for researcher/admin roles; write forbidden
     """
     patient = db.get(Patient, patient_id)
-    if patient is None:
+    if patient is None or patient.deleted_at is not None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "patient_not_found", "message": "Patient record not found."},
