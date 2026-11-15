@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Request, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_audit_event
@@ -12,6 +13,45 @@ from app.models.core import Patient, User
 from app.schemas.patients import POLICY_DEFAULT_DAYS, PatientCreate, PatientOut, PatientUpdate
 
 router = APIRouter(prefix="/patients", tags=["Patients"])
+
+
+@router.get("", response_model=list[PatientOut])
+def list_accessible_patients(
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> list[Patient]:
+    """List patients accessible to the authenticated user.
+
+    - Ordinary users (`patient`, etc.) see their own `app_user` patients and
+      `synthetic_demo` patients only. `research_participant` records are never returned.
+    - `researcher` / `admin` users also see `research_participant` patients, with
+      `shanghai_t2dm` ordered first as the primary research demo path.
+    """
+    stmt = select(Patient)
+    if current_user.role in {"researcher", "admin"}:
+        patients = [p for p in db.scalars(stmt).all() if p.deleted_at is None]
+    else:
+        patients = [
+            p
+            for p in db.scalars(stmt).all()
+            if p.deleted_at is None
+            and (
+                p.cohort_type == "synthetic_demo"
+                or (p.cohort_type == "app_user" and p.user_id == current_user.id)
+            )
+        ]
+
+    def _sort_key(p: Patient) -> tuple[int, str]:
+        if p.cohort_type == "research_participant" and p.source_dataset == "shanghai_t2dm":
+            return (0, p.external_id or str(p.id))
+        if p.cohort_type == "research_participant":
+            return (1, p.external_id or str(p.id))
+        if p.cohort_type == "synthetic_demo":
+            return (2, p.external_id or str(p.id))
+        return (3, p.display_name or str(p.id))
+
+    patients.sort(key=_sort_key)
+    return patients
 
 
 def _compute_retention_window(

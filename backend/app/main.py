@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.api.analytics import router as analytics_router
 from app.api.auth import router as auth_router
 from app.api.health import router as health_router
+from app.api.investigations import router as investigations_router
 from app.api.patients import router as patients_router
 from app.api.tracking import router as tracking_router
 from app.core.config import get_settings
@@ -60,3 +61,4 @@ app.include_router(auth_router, prefix="/api/v1")
 app.include_router(patients_router, prefix="/api/v1")
 app.include_router(tracking_router, prefix="/api/v1")
 app.include_router(analytics_router, prefix="/api/v1")
+app.include_router(investigations_router, prefix="/api/v1")

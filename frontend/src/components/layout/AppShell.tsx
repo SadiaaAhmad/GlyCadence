@@ -1,33 +1,80 @@
 "use client";
 
-import React from "react";
+import React, { Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   Activity,
   BrainCircuit,
   CalendarHeart,
-  FileText,
   LayoutDashboard,
-  MessageCircleQuestion,
-  UtensilsCrossed,
 } from "lucide-react";
 import { CadieLogo } from "@/components/layout/CadieLogo";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
-  { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/", label: "Overview", icon: LayoutDashboard },
+  { href: "/dashboard", label: "Intelligence Dashboard", icon: BrainCircuit },
   { href: "/tracking", label: "Daily Tracking", icon: Activity },
-  { href: "/intelligence", label: "Intelligence Center", icon: BrainCircuit },
-  { href: "/meals", label: "Meal Planner", icon: UtensilsCrossed },
-  { href: "/doctor-prep", label: "Doctor Visit Prep", icon: FileText },
-  { href: "/ask", label: "Ask GlyCadence", icon: MessageCircleQuestion },
 ];
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+function DesktopNav() {
   const pathname = usePathname();
+  return (
+    <nav className="flex-1 space-y-1" aria-label="Primary navigation">
+      {NAV_ITEMS.map((item) => {
+        const Icon = item.icon;
+        const active = pathname === item.href;
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={cn(
+              "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
+              active
+                ? "bg-[#0F4C5C] text-white shadow-xs"
+                : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
+            )}
+          >
+            <Icon className="h-4 w-4 shrink-0" />
+            <span>{item.label}</span>
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
 
+function MobileNav() {
+  const pathname = usePathname();
+  return (
+    <nav
+      className="mt-3 flex gap-1.5 overflow-x-auto pb-1 lg:hidden"
+      aria-label="Mobile navigation"
+    >
+      {NAV_ITEMS.map((item) => {
+        const active = pathname === item.href;
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={cn(
+              "whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+              active
+                ? "bg-[#0F4C5C] text-white"
+                : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+            )}
+          >
+            {item.label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-[#FFFDFB] text-slate-900 flex flex-col lg:flex-row">
       {/* Desktop Sidebar */}
@@ -36,27 +83,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <CadieLogo />
         </div>
 
-        <nav className="flex-1 space-y-1" aria-label="Primary navigation">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const active = pathname === item.href;
-            return (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
-                  active
-                    ? "bg-[#0F4C5C] text-white shadow-xs"
-                    : "text-slate-700 hover:bg-slate-100 hover:text-slate-900"
-                )}
-              >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span>{item.label}</span>
-              </Link>
-            );
-          })}
-        </nav>
+        <Suspense fallback={<div className="flex-1" />}>
+          <DesktopNav />
+        </Suspense>
 
         <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50/80 p-3.5 text-xs text-slate-600">
           <div className="flex items-center gap-1.5 font-semibold text-[#0F4C5C] mb-1">
@@ -81,33 +110,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <span className="font-medium text-slate-900">Longitudinal Diabetes &amp; Wellbeing Intelligence</span>
             </div>
             <div className="flex items-center gap-2">
-              <Badge variant="coral">Day 1 Foundation</Badge>
+              <Badge variant="coral">Day 4 Demo</Badge>
             </div>
           </div>
 
-          {/* Mobile Horizontal Nav */}
-          <nav
-            className="mt-3 flex gap-1.5 overflow-x-auto pb-1 lg:hidden"
-            aria-label="Mobile navigation"
-          >
-            {NAV_ITEMS.map((item) => {
-              const active = pathname === item.href;
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className={cn(
-                    "whitespace-nowrap rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
-                    active
-                      ? "bg-[#0F4C5C] text-white"
-                      : "bg-slate-100 text-slate-700 hover:bg-slate-200"
-                  )}
-                >
-                  {item.label}
-                </Link>
-              );
-            })}
-          </nav>
+          <Suspense fallback={null}>
+            <MobileNav />
+          </Suspense>
         </header>
 
         <main className="flex-1 px-4 py-6 sm:px-6 lg:px-8 max-w-6xl w-full mx-auto">
