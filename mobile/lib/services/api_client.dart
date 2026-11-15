@@ -112,7 +112,7 @@ class ApiClient {
   }
 
   Future<List<MealResponseItem>> getMealResponses(String patientId) async {
-    final uri = Uri.parse('$_baseUrl/api/v1/patients/$patientId/analytics/meals');
+    final uri = Uri.parse('$_baseUrl/api/v1/patients/$patientId/analytics/meal-responses');
     final res = await _http.get(uri, headers: _headers());
     final data = _decodeResponse(res) as List<dynamic>;
     return data
