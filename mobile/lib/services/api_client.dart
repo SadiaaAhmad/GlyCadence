@@ -65,6 +65,17 @@ class ApiClient {
     throw Exception('HTTP ${res.statusCode}: ${res.reasonPhrase ?? 'Request failed'}');
   }
 
+  Future<void> register(String email, String password) async {
+    final uri = Uri.parse('$_baseUrl/api/v1/auth/register');
+    final res = await _http.post(
+      uri,
+      headers: _headers(jsonBody: true),
+      body: jsonEncode({'email': email.trim(), 'password': password}),
+    );
+    _decodeResponse(res);
+    await login(email, password);
+  }
+
   Future<void> login(String email, String password) async {
     final uri = Uri.parse('$_baseUrl/api/v1/auth/login');
     final res = await _http.post(

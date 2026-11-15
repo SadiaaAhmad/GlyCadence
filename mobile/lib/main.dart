@@ -311,6 +311,7 @@ class LoginScreen extends StatefulWidget {
 class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  bool _isRegister = false;
   bool _busy = false;
   String? _error;
 
@@ -320,7 +321,11 @@ class _LoginScreenState extends State<LoginScreen> {
       _error = null;
     });
     try {
-      await widget.apiClient.login(_emailController.text, _passwordController.text);
+      if (_isRegister) {
+        await widget.apiClient.register(_emailController.text, _passwordController.text);
+      } else {
+        await widget.apiClient.login(_emailController.text, _passwordController.text);
+      }
       widget.onLoggedIn();
     } catch (e) {
       setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
@@ -354,9 +359,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text(
-                      'Sign in to GlyCadence',
-                      style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                    Text(
+                      _isRegister ? 'Create GlyCadence Account' : 'Sign in to GlyCadence',
+                      style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 6),
                     Text(
@@ -392,7 +397,8 @@ class _LoginScreenState extends State<LoginScreen> {
                     FilledButton(
                       onPressed: _busy ? null : _submit,
                       style: FilledButton.styleFrom(
-                        backgroundColor: GlyCadenceTheme.slateTeal,
+                        backgroundColor: GlyCadenceTheme.coral,
+                        foregroundColor: Colors.white,
                         padding: const EdgeInsets.symmetric(vertical: 14),
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(14),
@@ -404,7 +410,19 @@ class _LoginScreenState extends State<LoginScreen> {
                               width: 18,
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                             )
-                          : const Text('Sign In'),
+                          : Text(
+                              _isRegister ? 'Register & Sign In' : 'Sign In',
+                              style: const TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                    ),
+                    const SizedBox(height: 8),
+                    TextButton(
+                      onPressed: _busy ? null : () => setState(() => _isRegister = !_isRegister),
+                      child: Text(
+                        _isRegister
+                            ? 'Already have an account? Sign in'
+                            : 'Need an account? Register',
+                      ),
                     ),
                   ],
                 ),
