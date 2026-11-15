@@ -137,6 +137,11 @@ def create_investigation(
 ) -> InvestigationRunOut:
     # Read-only patient access enforces cohort isolation (research_participant requires researcher/admin)
     patient = require_patient_access(patient_id, current_user, db, write=False)
+    if payload.simulate_bad_draft and current_user.role not in {"researcher", "admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="simulate_bad_draft demo mode is restricted to researcher or admin roles.",
+        )
     is_research, dataset_label = _dataset_label_for_patient(patient)
 
     readings = list(

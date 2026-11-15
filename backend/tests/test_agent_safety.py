@@ -379,7 +379,7 @@ def test_investigations_api_cohort_isolation_bad_draft_and_audit():
         assert res_body["doctor_report"]["is_safe_to_display"] is True
         assert "dataset_documented" in res_body["primary_summary_patient"]
 
-        # 3. Ordinary user on synthetic_demo: normal run passes, simulate_bad_draft is blocked
+        # 3. Ordinary user on synthetic_demo: normal run passes, simulate_bad_draft is 403-restricted
         demo_ok = client.post(
             f"/api/v1/patients/{demo_pid}/investigations",
             headers={"Authorization": f"Bearer {tok_p}"},
@@ -391,9 +391,17 @@ def test_investigations_api_cohort_isolation_bad_draft_and_audit():
         assert ok_body["safety_passed"] is True
         assert ok_body["doctor_report"]["is_safe_to_display"] is True
 
-        demo_bad = client.post(
+        demo_bad_forbidden = client.post(
             f"/api/v1/patients/{demo_pid}/investigations",
             headers={"Authorization": f"Bearer {tok_p}"},
+            json={"mode": "deterministic_fallback", "simulate_bad_draft": True},
+        )
+        assert demo_bad_forbidden.status_code == 403, demo_bad_forbidden.text
+
+        # Researcher CAN trigger simulate_bad_draft demo
+        demo_bad = client.post(
+            f"/api/v1/patients/{demo_pid}/investigations",
+            headers={"Authorization": f"Bearer {tok_r}"},
             json={"mode": "deterministic_fallback", "simulate_bad_draft": True},
         )
         assert demo_bad.status_code == 201, demo_bad.text
@@ -448,3 +456,79 @@ def test_investigations_api_cohort_isolation_bad_draft_and_audit():
                 if u is not None:
                     db.delete(u)
             db.commit()
+
+
+def test_verifier_rejects_wrong_metric_cross_match_and_obs_count_leakage():
+    evs = [
+        _make_evidence(metric_name="mean_glucose_mg_dl", current_value=142.0, unit="mg/dL"),
+        _make_evidence(metric_name="time_in_range_pct", current_value=88.9, unit="%"),
+    ]
+    # Correct numbers, but swapped onto the wrong metrics (142.0 is mean_glucose, 88.9 is TIR)
+    swapped = verify_agent_draft(
+        patient_text="Time in Range (70-180 mg/dL) is 142.0% and mean glucose is 88.9 mg/dL.",
+        clinician_text="TIR 142.0%; mean glucose 88.9 mg/dL.",
+        evidence_items=evs,
+    )
+    assert swapped.passed is False
+    assert "numeric_ungrounded" in swapped.failed_reasons
+
+    # observation_count (96) must NOT ground mean_glucose or TIR
+    obs_leak = verify_agent_draft(
+        patient_text="Mean glucose is 96 mg/dL and Time in Range (70-180 mg/dL) is 96%.",
+        clinician_text="96 CGM readings analyzed.",
+        evidence_items=evs,
+    )
+    assert obs_leak.passed is False
+    assert "numeric_ungrounded" in obs_leak.failed_reasons
+
+
+def test_verifier_rejects_causal_prescriptive_and_direction_paraphrases():
+    evs = [
+        _make_evidence(metric_name="mean_glucose_mg_dl", current_value=142.0, unit="mg/dL"),
+        _make_evidence(metric_name="postprandial_iauc_mg_dl_min", current_value=0.0, unit="mg/dL*min"),
+    ]
+    now = datetime(2025, 2, 1, 12, 0, tzinfo=timezone.utc)
+    decline_meal = MealResponseItem(
+        meal_id="m-decline",
+        logged_at=now,
+        meal_type="lunch",
+        description="Mixed meal",
+        carbs_g=40.0,
+        pre_meal_glucose_mg_dl=150.0,
+        pre_meal_recorded_at=now - timedelta(minutes=10),
+        peak_post_meal_glucose_mg_dl=138.0,
+        excursion_delta_mg_dl=-12.0,
+        excursion_direction="postprandial_decline",
+        post_meal_reading_count=6,
+        post_meal_span_minutes=120.0,
+        max_consecutive_gap_minutes=30.0,
+        iauc_mg_dl_min=0.0,
+        iauc_valid=True,
+        rejection_reasons=[],
+        uncertainty_notes=[],
+    )
+
+    rep_prescriptive = verify_agent_draft(
+        patient_text="You should raise your insulin before lunch. Mean glucose is 142.0 mg/dL.",
+        clinician_text="Consider lowering your metformin dose.",
+        evidence_items=evs,
+    )
+    assert rep_prescriptive.passed is False
+    assert "prescriptive_overclaim" in rep_prescriptive.failed_reasons
+
+    rep_causal = verify_agent_draft(
+        patient_text="Steamed rice led to the glucose elevation. Mean glucose is 142.0 mg/dL.",
+        clinician_text="This proves that lunch drove hyperglycemia.",
+        evidence_items=evs,
+    )
+    assert rep_causal.passed is False
+    assert "causal_overclaim" in rep_causal.failed_reasons
+
+    rep_dir = verify_agent_draft(
+        patient_text="Glucose climbed after meals (mean glucose 142.0 mg/dL).",
+        clinician_text="Post-meal values went up.",
+        evidence_items=evs,
+        meal_responses=[decline_meal],
+    )
+    assert rep_dir.passed is False
+    assert "direction_contradiction" in rep_dir.failed_reasons

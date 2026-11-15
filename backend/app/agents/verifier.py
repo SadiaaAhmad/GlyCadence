@@ -71,6 +71,14 @@ CAUSAL_OVERCLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bstatistically\s+significant\b", re.I),
     re.compile(r"\bp-value\b", re.I),
     re.compile(r"\bp\s*<\s*0\.\d+", re.I),
+    re.compile(r"\bled\s+to\b", re.I),
+    re.compile(r"\bresulted\s+in\b", re.I),
+    re.compile(r"\bdrove\b", re.I),
+    re.compile(r"\bdriven\s+by\b", re.I),
+    re.compile(r"\bresponsible\s+for\b", re.I),
+    re.compile(r"\bconfirm(?:s|ed)?\s+that\b", re.I),
+    re.compile(r"\bdemonstrates\s+that\b", re.I),
+    re.compile(r"\bsignificant(?:ly)?\s+(?:higher|lower|difference|effect)\b", re.I),
 )
 
 PRESCRIPTIVE_OVERCLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -79,27 +87,123 @@ PRESCRIPTIVE_OVERCLAIM_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bstop\s+taking\b", re.I),
     re.compile(r"\bchange\s+your\s+medication\b", re.I),
     re.compile(r"\bprescribe\b", re.I),
+    re.compile(
+        r"\b(?:raise|lower|adjust|titrate|double|halve)\s+(?:your|the)\s+(?:insulin|metformin|dose|dosage|medication|meds)\b",
+        re.I,
+    ),
+    re.compile(r"\b(?:start|begin|resume|discontinue)\s+taking\b", re.I),
+    re.compile(r"\byou\s+should\s+(?:take|use|add|skip|avoid|raise|lower)\b", re.I),
+    re.compile(r"\bconsider\s+(?:raising|lowering|increasing|decreasing|stopping|starting)\b", re.I),
 )
 
-UPWARD_EXCURSION_WORDS = re.compile(r"\b(spike|spiked|surge|surged|elevation|elevated|rose|rise)\b", re.I)
+UPWARD_EXCURSION_WORDS = re.compile(
+    r"\b(spike|spiked|surge|surged|elevation|elevated|rose|rise|climbed|climb|went\s+up|jump|jumped|higher\s+after)\b",
+    re.I,
+)
 DOWNWARD_WORDS = re.compile(r"\b(drop|dropped|decline|declined|decrease|decreased|downward)\b", re.I)
-UPWARD_DRIFT_WORDS = re.compile(r"\b(increase|increased|rise|rose|upward)\b", re.I)
+UPWARD_DRIFT_WORDS = re.compile(r"\b(increase|increased|rise|rose|upward|climbed|went\s+up)\b", re.I)
 
 NUMBER_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_.])((?:(?<!\d)-)?\d+(?:\.\d+)?)(?![A-Za-z0-9_]|\.\d)")
 
+# Metric-specific grounding rules: (family_name, context_regex, allowed_evidence_metric_names)
+METRIC_CONTEXT_SPECS: tuple[tuple[str, re.Pattern[str], tuple[str, ...]], ...] = (
+    (
+        "tir",
+        re.compile(r"\b(TIR|time\s+in\s+range)\b", re.I),
+        ("time_in_range_70_180_pct", "time_in_range_pct", "tir_pct"),
+    ),
+    (
+        "tbr",
+        re.compile(r"\b(TBR|time\s+below\s+range)\b", re.I),
+        ("time_below_range_lt_70_pct", "time_below_range_level2_lt_54_pct", "time_below_range_pct", "tbr_pct"),
+    ),
+    (
+        "tar",
+        re.compile(r"\b(TAR|time\s+above\s+range)\b", re.I),
+        ("time_above_range_gt_180_pct", "time_above_range_level2_gt_250_pct", "time_above_range_pct", "tar_pct"),
+    ),
+    ("cv", re.compile(r"\b(CV|coefficient\s+of\s+variation)\b", re.I), ("glucose_cv_pct", "cv_pct")),
+    ("sd", re.compile(r"\b(SD|standard\s+deviation)\b", re.I), ("sd_glucose_mg_dl",)),
+    (
+        "coverage",
+        re.compile(r"\b(coverage|wear\s+time)\b", re.I),
+        ("period_coverage_pct", "daily_coverage_pct_median", "cgm_period_coverage_pct"),
+    ),
+    ("missingness", re.compile(r"\b(missingness|missing)\b", re.I), ("__missingness__",)),
+    ("iauc", re.compile(r"\b(iAUC|incremental\s+area)\b", re.I), ("postprandial_iauc_mg_dl_min",)),
+    (
+        "excursion",
+        re.compile(r"\b(excursion|delta|peak|pre-meal|post-meal)\b", re.I),
+        (
+            "postprandial_excursion_mg_dl",
+            "postprandial_iauc_mg_dl_min",
+            "exploratory_glucose_window_shift_mg_dl",
+            "exploratory_glucose_drift",
+        ),
+    ),
+    (
+        "drift",
+        re.compile(r"\b(drift|baseline\s+mean|recent\s+mean|early\s+mean|late\s+mean|shift)\b", re.I),
+        ("exploratory_glucose_window_shift_mg_dl", "exploratory_glucose_drift"),
+    ),
+    (
+        "mean_glucose",
+        re.compile(r"\b(mean\s+glucose|average\s+glucose)\b", re.I),
+        ("mean_glucose_mg_dl", "exploratory_glucose_window_shift_mg_dl", "exploratory_glucose_drift"),
+    ),
+    (
+        "adherence",
+        re.compile(r"\b(adherence|taken\s+rate|regimen)\b", re.I),
+        ("medication_adherence_rate", "medication_taken_rate"),
+    ),
+    (
+        "obs_count",
+        re.compile(r"\b(reading|readings|observation|observations|expected|sample|samples)\b", re.I),
+        ("__obs_count__",),
+    ),
+)
+EXTRA_SUMMARY_CONTEXT_RE = re.compile(
+    r"\b(meal|meals|window|windows|regimen|regimens|notation|notations|day|days|excursion|delta|iAUC|taken\s+rate|active|coverage)\b",
+    re.I,
+)
 
-def _collect_evidence_numbers(evidence_items: Sequence[EvidenceItem]) -> set[float]:
-    nums: set[float] = set()
+
+def _collect_metric_evidence_map(evidence_items: Sequence[EvidenceItem]) -> dict[str, set[float]]:
+    by_metric: dict[str, set[float]] = {}
     for ev in evidence_items:
-        for val in (ev.baseline_value, ev.current_value, ev.delta, ev.missingness_pct):
+        bucket = by_metric.setdefault(ev.metric_name, set())
+        for val in (ev.baseline_value, ev.current_value, ev.delta):
             if val is not None:
-                nums.add(round(float(val), 2))
-                nums.add(round(float(val), 1))
-                nums.add(round(float(val), 0))
-        nums.add(float(ev.observation_count))
+                bucket.add(round(float(val), 2))
+                bucket.add(round(float(val), 1))
+                bucket.add(round(float(val), 0))
+        if ev.missingness_pct is not None:
+            miss_bucket = by_metric.setdefault("__missingness__", set())
+            miss_bucket.add(round(float(ev.missingness_pct), 2))
+            miss_bucket.add(round(float(ev.missingness_pct), 1))
+        obs_bucket = by_metric.setdefault("__obs_count__", set())
+        obs_bucket.add(float(ev.observation_count))
         if ev.expected_observation_count is not None:
-            nums.add(float(ev.expected_observation_count))
-    return nums
+            obs_bucket.add(float(ev.expected_observation_count))
+    return by_metric
+
+
+def _clause_around(text: str, start_idx: int, end_idx: int) -> str:
+    left_bound = max(0, start_idx - 55)
+    right_bound = min(len(text), end_idx + 40)
+    left_seg = text[left_bound:start_idx]
+    right_seg = text[end_idx:right_bound]
+    # Trim at sentence/clause delimiters so previous metrics do not bleed in
+    for sep in (";", "\n", ". ", ", "):
+        if sep in left_seg:
+            left_seg = left_seg.rsplit(sep, 1)[-1]
+        if sep in right_seg:
+            right_seg = right_seg.split(sep, 1)[0]
+    return f"{left_seg}{text[start_idx:end_idx]}{right_seg}"
+
+
+def _matches_any(num_val: float, candidates: set[float]) -> bool:
+    return any(abs(num_val - c) <= 0.15 or abs(abs(num_val) - abs(c)) <= 0.15 for c in candidates)
 
 
 def verify_agent_draft(
@@ -131,12 +235,20 @@ def verify_agent_draft(
         failed_reasons.append("empty_draft")
         failed_details.append("Draft narrative is empty.")
 
-    # 1. Named-threshold & EvidenceItem numeric grounding
-    evidence_nums = _collect_evidence_numbers(evidence_items)
+    # 1. Metric-specific EvidenceItem & named-threshold numeric grounding
+    by_metric = _collect_metric_evidence_map(evidence_items)
+    excursion_bucket = by_metric.setdefault("postprandial_excursion_mg_dl", set())
+    for mr in meal_responses:
+        for val in (mr.excursion_delta_mg_dl, mr.pre_meal_glucose_mg_dl, mr.peak_post_meal_glucose_mg_dl):
+            if val is not None:
+                excursion_bucket.add(round(float(val), 2))
+                excursion_bucket.add(round(float(val), 1))
+                excursion_bucket.add(round(float(val), 0))
+    extra_nums_set: set[float] = set()
     for extra_n in extra_grounded_numbers:
-        evidence_nums.add(round(float(extra_n), 2))
-        evidence_nums.add(round(float(extra_n), 1))
-        evidence_nums.add(round(float(extra_n), 0))
+        extra_nums_set.add(round(float(extra_n), 2))
+        extra_nums_set.add(round(float(extra_n), 1))
+        extra_nums_set.add(round(float(extra_n), 0))
 
     # Ignore version strings like v1.6.0, ISO dates like 2023-01-01, and IDs like ST2D-1001 / SYNTH-DEMO-001
     sanitized_text = re.sub(r"\bv\d+\.\d+\.\d+\b", " ", combined)
@@ -150,30 +262,49 @@ def verify_agent_draft(
         except ValueError:
             continue
 
-        # Check direct EvidenceItem grounding first
-        is_ev_grounded = any(
-            abs(num_val - ev_n) <= 0.15 or abs(abs(num_val) - abs(ev_n)) <= 0.15
-            for ev_n in evidence_nums
-        )
-        if is_ev_grounded:
-            continue
-
-        # Otherwise, MUST match a named GlycemicThresholds field WITH local context
         start = max(0, match.start() - 45)
         end = min(len(sanitized_text), match.end() + 45)
         local_ctx = sanitized_text[start:end]
+        clause_ctx = _clause_around(sanitized_text, match.start(), match.end())
 
+        # A. Named GlycemicThresholds check first (70, 180, 54, 250, 14, 70% threshold)
         matched_field: str | None = None
         for field_name, thresh_val, ctx_re in THRESHOLD_CONTEXT_RULES:
             if abs(num_val - thresh_val) <= 1e-6 and ctx_re.search(local_ctx):
                 matched_field = field_name
                 break
-
         if matched_field is not None:
             if matched_field not in named_thresholds_used:
                 named_thresholds_used.append(matched_field)
-        else:
+            continue
+
+        # B. Metric-specific EvidenceItem grounding
+        matched_metric_names: list[str] = []
+        for _, m_ctx_re, m_names in METRIC_CONTEXT_SPECS:
+            if m_ctx_re.search(clause_ctx):
+                matched_metric_names.extend(m_names)
+
+        if matched_metric_names:
+            metric_candidates: set[float] = set()
+            for mn in matched_metric_names:
+                metric_candidates.update(by_metric.get(mn, set()))
+                if mn == "postprandial_iauc_mg_dl_min":
+                    for k, vals in by_metric.items():
+                        if k.endswith("postprandial_iauc_mg_dl_min"):
+                            metric_candidates.update(vals)
+            if _matches_any(num_val, metric_candidates):
+                continue
+            # Also allow extra_grounded_numbers ONLY for excursion/adherence/iauc summary counts
+            if EXTRA_SUMMARY_CONTEXT_RE.search(clause_ctx) and _matches_any(num_val, extra_nums_set):
+                continue
             ungrounded_numbers.append(raw_num_str)
+            continue
+
+        # C. Unlabeled summary counts (e.g. "18 valid meal windows", "1 active regimen(s)")
+        if EXTRA_SUMMARY_CONTEXT_RE.search(clause_ctx) and _matches_any(num_val, extra_nums_set):
+            continue
+
+        ungrounded_numbers.append(raw_num_str)
 
     if ungrounded_numbers:
         failed_reasons.append("numeric_ungrounded")
