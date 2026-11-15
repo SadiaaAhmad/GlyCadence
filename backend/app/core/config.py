@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     jwt_access_token_expire_minutes: int = Field(default=20)
     jwt_refresh_token_expire_days: int = Field(default=7)
     gemini_api_key: str | None = Field(default=None)
-    gemini_model: str = Field(default="gemini-2.5-flash")
+    gemini_model: str = Field(default="gemini-3.5-flash-lite")
     agent_execution_mode: str = Field(default="auto")
     cors_origins: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: ["http://localhost:3000", "http://127.0.0.1:3000"]

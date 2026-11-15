@@ -164,6 +164,17 @@ def synthesize_narrative(
     try:
         from google import genai
         from google.genai import types
+        from pydantic import BaseModel
+
+        class _HypothesisItem(BaseModel):
+            title: str
+            confidence: float
+
+        class _GeminiDraftSchema(BaseModel):
+            patient_summary: str
+            clinician_summary: str
+            clinician_questions: list[str]
+            hypotheses: list[_HypothesisItem]
 
         client = genai.Client(api_key=settings.gemini_api_key)
         compact_evidence = [
@@ -179,20 +190,41 @@ def synthesize_narrative(
             }
             for ev in evidence_items[:12]
         ]
+        metrics_summary = {
+            "observation_count": summary.observation_count,
+            "mean_glucose_mg_dl": summary.mean_glucose_mg_dl,
+            "tir_70_180_pct": summary.tir_pct,
+            "tbr_lt_70_pct": summary.tbr_pct,
+            "tar_gt_180_pct": summary.tar_pct,
+            "cv_pct": summary.cv_pct,
+            "period_coverage_pct": summary.coverage.period_coverage_pct,
+            "valid_meal_windows": len([m for m in meal_responses if m.iauc_valid]),
+            "drift_status": drift.status,
+            "drift_baseline_mean_mg_dl": drift.baseline_mean_mg_dl,
+            "drift_recent_mean_mg_dl": drift.recent_mean_mg_dl,
+            "drift_delta_mg_dl": drift.delta_mg_dl,
+            "active_regimen_count": meds.active_regimen_count,
+            "adherence_computable": meds.adherence_computable,
+            "observed_taken_pct": meds.observed_taken_pct,
+        }
         repair_clause = (
-            f"\nPrevious draft failed safety verifier with: {repair_feedback}. Fix all issues strictly."
+            f"\nREPAIR REQUIRED: Your previous draft was REJECTED by the safety verifier with: {repair_feedback}. "
+            "Remove or rewrite every flagged number/phrase so ONLY exact numbers from MetricsSummary/Evidence appear in their own metric clause."
             if repair_feedback
             else ""
         )
         prompt = (
             "You are a clinical glycemic data summarizer. Produce strict JSON with keys: "
             "patient_summary (str), clinician_summary (str), clinician_questions (list[str]), hypotheses (list[dict]). "
-            "RULES: Use ONLY numbers present in the provided evidence or named clinical thresholds (70-180 mg/dL target range, "
-            "<70 mg/dL, <54 mg/dL, >180 mg/dL, >250 mg/dL, 70% engineering coverage threshold, 14-day clinical guidance). "
-            "Include exact provenance names (e.g., dataset_documented, archive_aligned, native). "
-            "NEVER make causal claims ('caused by', 'proves that'), statistical significance claims, or medication dosing advice. "
-            f"Cohort: {cohort_type} ({dataset_label}). Drift status: {drift.status}. "
-            f"Medication adherence computable: {meds.adherence_computable}. "
+            "STRICT GROUNDING RULES: "
+            "1) Use ONLY numbers present in MetricsSummary or Evidence, OR these exact threshold phrases: "
+            "'70-180 mg/dL target range', '<70 mg/dL', '>180 mg/dL', '70% engineering coverage threshold', '14-day clinical guidance'. "
+            "2) NEVER write unprovided counts or durations such as 'Type 2', 'Level 1', 'Level 2', '24-hour', '2-hour', '15-minute', '1-day', or '1 logged event'. "
+            "3) Always place each number in the same comma/period clause as its metric name (e.g. 'Mean glucose is X mg/dL, Time in Range (70-180 mg/dL) is Y%, Time Below Range (<70 mg/dL) is Z%, Time Above Range (>180 mg/dL) is W%, sensor coverage is C% against the 70% engineering coverage threshold, iAUC is A mg/dL*min'). "
+            "4) Include exact non-zero provenance names as `'X CGM readings with provenance [native]'` (or `[dataset_documented]`, `[archive_aligned]`). Do NOT list zero-count provenances (e.g. do NOT write 'dataset_documented is 0'). "
+            "5) NEVER make causal claims ('caused by', 'proves that', 'led to', 'drove'), statistical significance claims, or medication dosing advice. "
+            f"Cohort: {cohort_type} ({dataset_label}). "
+            f"MetricsSummary: {json.dumps(metrics_summary)} "
             f"Evidence: {json.dumps(compact_evidence)}{repair_clause}"
         )
         resp = client.models.generate_content(
@@ -200,6 +232,7 @@ def synthesize_narrative(
             contents=prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
+                response_schema=_GeminiDraftSchema,
                 temperature=0.1,
             ),
         )

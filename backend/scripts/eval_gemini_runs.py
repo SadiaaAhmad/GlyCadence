@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import sys
+import time
 import uuid
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -110,16 +111,27 @@ def main() -> None:
     for p_idx in range(3):
         pid, label, readings, meals, meds, med_events = _build_patient_fixture(p_idx)
         for r_idx in range(runs_per_patient):
-            state = run_investigation_graph(
-                patient_id=pid,
-                cohort_type="synthetic_demo",
-                dataset_label=label,
-                readings=readings,
-                meals=meals,
-                medications=meds,
-                medication_events=med_events,
-                mode="gemini",
-            )
+            state = None
+            for attempt in range(4):
+                try:
+                    state = run_investigation_graph(
+                        patient_id=pid,
+                        cohort_type="synthetic_demo",
+                        dataset_label=label,
+                        readings=readings,
+                        meals=meals,
+                        medications=meds,
+                        medication_events=med_events,
+                        mode="gemini",
+                    )
+                    break
+                except Exception as exc:
+                    if "503" in str(exc) and attempt < 3:
+                        time.sleep(3 * (attempt + 1))
+                        continue
+                    raise
+            assert state is not None
+            time.sleep(1.0)
             total_runs += 1
             v = state["verifier_report"]
             models_seen.add(state["model_used"])
@@ -141,6 +153,11 @@ def main() -> None:
                     "repair_attempts": v.repair_attempts,
                     "failed_reasons": v.failed_reasons,
                 }
+            )
+            print(
+                f"[{total_runs}/12] {label} run {r_idx + 1}: mode={state['execution_mode']} model={state['model_used']} passed={v.passed} repairs={v.repair_attempts} failed={v.failed_reasons}",
+                file=sys.stderr,
+                flush=True,
             )
 
     print(
