@@ -392,7 +392,7 @@ def evaluate_meal_responses(
     device_id: str | None = None,
 ) -> list[MealResponseItem]:
     """Evaluate postprandial responses across a sequence of meals using O(N log N + M log N) bisect slicing."""
-    points, total_dedup_removed = prepare_glucose_points_with_stats(
+    points, _ = prepare_glucose_points_with_stats(
         glucose_readings, deduplicate_across_devices=False
     )
     cgm_points, _ = filter_cgm_only(points)
@@ -400,6 +400,9 @@ def evaluate_meal_responses(
         cgm_points, device_id=device_id
     )
     point_timestamps = [p.recorded_at for p in points]
+
+    # Sort raw input timestamps once so we can compute exact per-window duplicate counts in O(log N)
+    raw_sorted_timestamps = sorted(_extract_raw_recorded_at(r) for r in glucose_readings)
 
     results: list[MealResponseItem] = []
     for idx, meal in enumerate(meals):
@@ -426,6 +429,11 @@ def evaluate_meal_responses(
         right_idx = bisect_right(point_timestamps, post_end)
         sliced_points = points[left_idx:right_idx]
 
+        raw_left_idx = bisect_left(raw_sorted_timestamps, pre_start)
+        raw_right_idx = bisect_right(raw_sorted_timestamps, post_end)
+        raw_window_count = raw_right_idx - raw_left_idx
+        window_dedup_removed = max(0, raw_window_count - len(sliced_points))
+
         results.append(
             evaluate_single_meal_response(
                 meal_id=m_id,
@@ -441,7 +449,7 @@ def evaluate_meal_responses(
                 _prepared_window_already_sliced=True,
                 _resolved_device_id=resolved_device_id,
                 _devices_present=devices_present,
-                _window_dedup_removed=total_dedup_removed,
+                _window_dedup_removed=window_dedup_removed,
             )
         )
     return results

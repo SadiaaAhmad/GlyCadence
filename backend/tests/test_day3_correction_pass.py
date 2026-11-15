@@ -879,3 +879,82 @@ def test_group_e_local_and_relative_daily_coverage_converted_glucose_validation_
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# Audit Item 2 — Per-meal dedup count must be per-window, not whole-series
+# ---------------------------------------------------------------------------
+
+
+def test_audit_item_2_per_meal_window_dedup_count():
+    from app.analytics import evaluate_meal_responses
+
+    t_m1 = datetime(2026, 6, 10, 8, 0, tzinfo=timezone.utc)
+    t_m2 = datetime(2026, 6, 10, 18, 0, tzinfo=timezone.utc)
+
+    meals = [
+        {
+            "id": "meal-morning",
+            "logged_at": t_m1,
+            "meal_type": "breakfast",
+            "description": "Oats",
+            "carbs_g": 40.0,
+            "source_dataset": "shanghai_t2dm",
+        },
+        {
+            "id": "meal-evening",
+            "logged_at": t_m2,
+            "meal_type": "dinner",
+            "description": "Fish and greens",
+            "carbs_g": 30.0,
+            "source_dataset": "shanghai_t2dm",
+        },
+    ]
+
+    readings = []
+    # Meal 1 window: [-15m, +15m, +30m, +60m, +90m, +120m] with 2 duplicate readings at +15m
+    for idx, offset in enumerate([-15, 15, 15, 15, 30, 60, 90, 120]):
+        readings.append(
+            {
+                "id": f"m1-r-{idx}",
+                "recorded_at": t_m1 + timedelta(minutes=offset),
+                "glucose_mg_dl": 100.0 if offset < 0 else 145.0,
+                "reading_type": "cgm",
+                "observation_provenance": "native",
+                "source_dataset": "shanghai_t2dm",
+            }
+        )
+    # Meal 2 window: [-15m, +15m, +30m, +60m, +90m, +120m] with ZERO duplicates
+    for idx, offset in enumerate([-15, 15, 30, 60, 90, 120]):
+        readings.append(
+            {
+                "id": f"m2-r-{idx}",
+                "recorded_at": t_m2 + timedelta(minutes=offset),
+                "glucose_mg_dl": 105.0 if offset < 0 else 135.0,
+                "reading_type": "cgm",
+                "observation_provenance": "native",
+                "source_dataset": "shanghai_t2dm",
+            }
+        )
+    # 3 extra duplicates far outside both meal windows (at +300 min after Meal 2)
+    for idx in range(4):
+        readings.append(
+            {
+                "id": f"outside-dup-{idx}",
+                "recorded_at": t_m2 + timedelta(minutes=300),
+                "glucose_mg_dl": 110.0,
+                "reading_type": "cgm",
+                "observation_provenance": "native",
+                "source_dataset": "shanghai_t2dm",
+            }
+        )
+
+    res = evaluate_meal_responses(meals, readings, native_only=True)
+    assert len(res) == 2
+    assert res[0].meal_id == "meal-morning"
+    assert res[0].deduplicated_removed_count == 2
+    assert any("Removed 2 duplicate" in n for n in res[0].uncertainty_notes)
+
+    assert res[1].meal_id == "meal-evening"
+    assert res[1].deduplicated_removed_count == 0
+    assert not any("duplicate" in n.lower() for n in res[1].uncertainty_notes)
