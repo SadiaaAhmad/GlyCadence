@@ -27,7 +27,7 @@ from app.agents.graph import run_investigation_graph
 from app.agents.llm import _is_gemini_key_usable
 from app.core.config import get_settings
 from app.core.database import get_engine
-from app.models import GlucoseReading, Meal, Medication, MedicationEvent, Patient
+from app.models import GlucoseReading, Meal, Medication, MedicationEvent, Patient, WellbeingRecord
 
 
 def _ensure_synth_demo(db: Session) -> Patient:
@@ -38,6 +38,36 @@ def _ensure_synth_demo(db: Session) -> Patient:
         )
     )
     if existing is not None:
+        has_wb = db.scalar(select(WellbeingRecord).where(WellbeingRecord.patient_id == existing.id))
+        if has_wb is None:
+            base_wb = datetime(2025, 2, 1, 9, 0, tzinfo=timezone.utc)
+            db.add_all([
+                WellbeingRecord(
+                    id=uuid.uuid4(),
+                    patient_id=existing.id,
+                    cohort_type="synthetic_demo",
+                    logged_at=base_wb,
+                    stress_score=4,
+                    fatigue_score=3,
+                    sleep_hours=5.5,
+                    sleep_quality=2,
+                    illness_flag=False,
+                    source_dataset="synthetic_demo",
+                ),
+                WellbeingRecord(
+                    id=uuid.uuid4(),
+                    patient_id=existing.id,
+                    cohort_type="synthetic_demo",
+                    logged_at=base_wb + timedelta(days=1),
+                    stress_score=2,
+                    fatigue_score=4,
+                    sleep_hours=7.0,
+                    sleep_quality=4,
+                    illness_flag=False,
+                    source_dataset="synthetic_demo",
+                ),
+            ])
+            db.commit()
         return existing
 
     pid = uuid.uuid4()
@@ -121,6 +151,13 @@ def _run_for_patient(db: Session, patient: Patient, label: str, simulate_bad: bo
         meals=meals,
         medications=meds,
         medication_events=med_events,
+        wellbeing_records=list(
+            db.scalars(
+                select(WellbeingRecord)
+                .where(WellbeingRecord.patient_id == patient.id)
+                .order_by(WellbeingRecord.logged_at.asc())
+            ).all()
+        ),
         simulate_bad_draft=simulate_bad,
     )
     v = state["verifier_report"]

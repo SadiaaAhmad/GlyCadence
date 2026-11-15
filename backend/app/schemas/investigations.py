@@ -42,6 +42,15 @@ class VerifierReportOut(BaseModel):
     repair_attempts: int = 0
 
 
+class AgentTraceStep(BaseModel):
+    node: str
+    started_at: datetime
+    ended_at: datetime
+    status: Literal["completed", "repaired", "rejected"]
+    summary: str
+    evidence_count: int = 0
+
+
 class AgentObservationOut(BaseModel):
     agent_name: str
     window_start: datetime
@@ -104,6 +113,8 @@ class InvestigationRunOut(BaseModel):
     safety_audit_notes: dict[str, Any] | None = None
     verifier_report: VerifierReportOut | None = None
     observations: list[AgentObservationOut] = Field(default_factory=list)
+    trace: list[AgentTraceStep] = Field(default_factory=list)
+    cross_signal_findings: list[str] = Field(default_factory=list)
     doctor_report: DoctorReportOut | None = None
     evidence_items: list[EvidenceItem] = Field(default_factory=list)
     created_at: datetime

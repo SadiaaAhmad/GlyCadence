@@ -221,7 +221,21 @@ def test_langgraph_pipeline_deterministic_fallback_and_simulate_bad_draft():
     assert state_ok["model_used"] == "deterministic_template_v1"
     assert state_ok["verifier_report"].passed is True
     assert "dataset_documented" in state_ok["draft"]["patient_summary"]
-    assert len(state_ok["observations"]) == 3
+    assert len(state_ok["observations"]) == 6
+    obs_names = {o.agent_name for o in state_ok["observations"]}
+    assert obs_names == {
+        "data_quality",
+        "pattern_watcher",
+        "diet_nutrition",
+        "medication_analyst",
+        "wellbeing_companion",
+        "cross_signal_orchestrator",
+    }
+    trace_nodes = [t.node for t in state_ok["trace"]]
+    assert "supervisor" in trace_nodes and "verifier" in trace_nodes and "appointment_preparer" in trace_nodes
+    assert all(t.started_at <= t.ended_at for t in state_ok["trace"])
+    assert "No wellbeing check-ins logged" in state_ok["wellbeing_summary_text"]
+    assert "Higher observed glucose response (based on" in state_ok["diet_summary_text"]
 
     # 2. Simulated bad draft is blocked by Verifier
     state_bad = run_investigation_graph(
@@ -532,3 +546,79 @@ def test_verifier_rejects_causal_prescriptive_and_direction_paraphrases():
     )
     assert rep_dir.passed is False
     assert "direction_contradiction" in rep_dir.failed_reasons
+
+
+def test_phase1_neutral_food_wellbeing_no_causal_cross_signal_and_trace():
+    from app.models import WellbeingRecord
+
+    evs = [_make_evidence(metric_name="mean_glucose_mg_dl", current_value=142.0, unit="mg/dL")]
+    bad_food = verify_agent_draft(
+        patient_text="Mean glucose is 142.0 mg/dL.",
+        clinician_text="Mean glucose is 142.0 mg/dL.",
+        evidence_items=evs,
+        extra_agent_texts=["White rice was a bad food with high spike."],
+    )
+    assert bad_food.passed is False
+    assert "judgmental_food_wording" in bad_food.failed_reasons
+
+    bad_wb = verify_agent_draft(
+        patient_text="Mean glucose is 142.0 mg/dL.",
+        clinician_text="Mean glucose is 142.0 mg/dL.",
+        evidence_items=evs,
+        extra_agent_texts=["High stress caused glucose elevation."],
+    )
+    assert bad_wb.passed is False
+    assert "causal_overclaim" in bad_wb.failed_reasons
+
+    pid = uuid.uuid4()
+    base_ts = datetime(2025, 2, 1, 8, 0, tzinfo=timezone.utc)
+    readings = [
+        GlucoseReading(
+            id=uuid.uuid4(),
+            patient_id=pid,
+            cohort_type="synthetic_demo",
+            recorded_at=base_ts + timedelta(minutes=15 * i),
+            glucose_mg_dl=125.0 + (i % 6) * 8.0,
+            raw_value=125.0 + (i % 6) * 8.0,
+            raw_unit="mg/dL",
+            reading_type="cgm",
+            device_id="FreeStyle_Libre_H",
+            sampling_interval_min=15,
+            observation_provenance="native",
+            timestamp_semantics="real_world_local",
+            timezone_basis="assumed_study_location",
+            source_dataset="synthetic_demo",
+        )
+        for i in range(48)
+    ]
+    wb = [
+        WellbeingRecord(
+            id=uuid.uuid4(),
+            patient_id=pid,
+            cohort_type="synthetic_demo",
+            logged_at=base_ts + timedelta(hours=2),
+            stress_score=5,
+            fatigue_score=4,
+            sleep_hours=5.0,
+            sleep_quality=2,
+            illness_flag=False,
+            source_dataset="synthetic_demo",
+        )
+    ]
+    state = run_investigation_graph(
+        patient_id=str(pid),
+        cohort_type="synthetic_demo",
+        dataset_label="SYNTH-PHASE1-TEST",
+        readings=readings,
+        meals=[],
+        medications=[],
+        medication_events=[],
+        wellbeing_records=wb,
+        mode="deterministic_fallback",
+    )
+    assert state["verifier_report"].passed is True
+    assert "elevated stress (>=4/5) on 1 day(s)" in state["wellbeing_summary_text"]
+    assert "Co-occurrence only" in state["wellbeing_summary_text"]
+    assert len(state["cross_signal_findings"]) >= 1
+    assert len(state["draft"]["clinician_questions"]) >= 3
+    assert len(state["trace"]) >= 8

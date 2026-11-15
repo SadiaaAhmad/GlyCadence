@@ -202,6 +202,15 @@ def _clause_around(text: str, start_idx: int, end_idx: int) -> str:
     return f"{left_seg}{text[start_idx:end_idx]}{right_seg}"
 
 
+JUDGMENTAL_FOOD_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(good|bad|unhealthy|healthy|toxic|harmful|safe|unsafe|forbidden|junk|cheat)\s+(food|foods|meal|meals|carbs|snack|snacks|diet)\b", re.I),
+    re.compile(r"\b(food|foods|meal|meals)\s+(?:is|are|was|were)\s+(bad|good|unhealthy|healthy|toxic|unsafe|safe)\b", re.I),
+)
+WELLBEING_CAUSAL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(stress|fatigue|sleep|illness)\s+(?:caused|triggered|drove|elevated|spiked|worsened)\b", re.I),
+)
+
+
 def _matches_any(num_val: float, candidates: set[float]) -> bool:
     return any(abs(num_val - c) <= 0.15 or abs(abs(num_val) - abs(c)) <= 0.15 for c in candidates)
 
@@ -214,10 +223,13 @@ def verify_agent_draft(
     meal_responses: Sequence[MealResponseItem] = (),
     drift_summary: DriftSummaryOut | None = None,
     extra_grounded_numbers: Sequence[float] = (),
+    extra_agent_texts: Sequence[str] = (),
     repair_attempts: int = 0,
 ) -> VerifierReportOut:
     """Deterministic safety gate enforcing Decision C & 02_pre_day4_agent_safety_spec.md."""
     combined = f"{patient_text}\n{clinician_text}".strip()
+    specialist_combined = "\n".join(t for t in extra_agent_texts if t).strip()
+    all_language_text = f"{combined}\n{specialist_combined}".strip()
     checks_run = [
         "named_threshold_numeric_grounding",
         "unit_consistency",
@@ -225,6 +237,8 @@ def verify_agent_draft(
         "causal_overclaim",
         "prescriptive_overclaim",
         "provenance_disclosure",
+        "neutral_food_wording",
+        "wellbeing_cooccurrence_only",
     ]
     failed_reasons: list[str] = []
     failed_details: list[str] = []
@@ -358,8 +372,8 @@ def verify_agent_draft(
             failed_details.append("Drift direction claimed when deterministic status is insufficient_data.")
 
     # 4. Causal & statistical overclaim checks
-    for pat in CAUSAL_OVERCLAIM_PATTERNS:
-        m = pat.search(combined)
+    for pat in (*CAUSAL_OVERCLAIM_PATTERNS, *WELLBEING_CAUSAL_PATTERNS):
+        m = pat.search(all_language_text)
         if m:
             if "causal_overclaim" not in failed_reasons:
                 failed_reasons.append("causal_overclaim")
@@ -368,11 +382,20 @@ def verify_agent_draft(
 
     # 5. Prescriptive overclaim checks
     for pat in PRESCRIPTIVE_OVERCLAIM_PATTERNS:
-        m = pat.search(combined)
+        m = pat.search(all_language_text)
         if m:
             if "prescriptive_overclaim" not in failed_reasons:
                 failed_reasons.append("prescriptive_overclaim")
             failed_details.append(f"Prescriptive medication advice detected: {m.group(0)!r}")
+            break
+
+    # 5b. Neutral food wording check (diet_nutrition + draft)
+    for pat in JUDGMENTAL_FOOD_PATTERNS:
+        m = pat.search(all_language_text)
+        if m:
+            if "judgmental_food_wording" not in failed_reasons:
+                failed_reasons.append("judgmental_food_wording")
+            failed_details.append(f"Non-neutral food label detected: {m.group(0)!r}")
             break
 
     # 6. Provenance disclosure check

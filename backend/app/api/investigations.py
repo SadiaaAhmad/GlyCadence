@@ -20,10 +20,12 @@ from app.models import (
     MedicationEvent,
     Patient,
     User,
+    WellbeingRecord,
 )
 from app.schemas.analytics import EvidenceItem
 from app.schemas.investigations import (
     AgentObservationOut,
+    AgentTraceStep,
     DoctorReportOut,
     InvestigationRunCreate,
     InvestigationRunOut,
@@ -120,6 +122,8 @@ def _serialize_investigation(
         safety_audit_notes=audit_notes or None,
         verifier_report=verifier_rep,
         observations=obs_outs,
+        trace=[AgentTraceStep.model_validate(t) for t in audit_notes.get("trace", [])],
+        cross_signal_findings=list(audit_notes.get("cross_signal_findings", [])),
         doctor_report=doc_out,
         evidence_items=all_evs,
         created_at=inv.created_at,
@@ -173,6 +177,13 @@ def create_investigation(
         meals=meals,
         medications=meds,
         medication_events=med_events,
+        wellbeing_records=list(
+            db.scalars(
+                select(WellbeingRecord)
+                .where(WellbeingRecord.patient_id == patient.id)
+                .order_by(WellbeingRecord.logged_at.asc())
+            ).all()
+        ),
         mode=payload.mode,
         allowed_provenances=payload.allowed_provenances,
         baseline_method=payload.baseline_method,
@@ -196,6 +207,8 @@ def create_investigation(
         "verifier_report": verifier_rep.model_dump(mode="json"),
         "is_research_dataset": is_research,
         "dataset_label": dataset_label,
+        "trace": [step.model_dump(mode="json") for step in state.get("trace", [])],
+        "cross_signal_findings": list(state.get("cross_signal_findings", [])),
     }
 
     inv = Investigation(
@@ -244,6 +257,8 @@ def create_investigation(
         "model_used": model_used,
         "is_research_dataset": is_research,
         "dataset_label": dataset_label,
+        "trace": [step.model_dump(mode="json") for step in state.get("trace", [])],
+        "cross_signal_findings": list(state.get("cross_signal_findings", [])),
         "allowed_provenances": summary.allowed_provenances,
         "provenance_counts": {
             "native": summary.native_observation_count,
