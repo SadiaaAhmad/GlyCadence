@@ -897,9 +897,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 TextField(
                   controller: _urlController,
-                  decoration: const InputDecoration(
-                    hintText: 'http://10.1.161.120:8010',
-                    border: OutlineInputBorder(),
+                  decoration: InputDecoration(
+                    hintText: ApiClient.defaultBaseUrl,
+                    border: const OutlineInputBorder(),
                   ),
                 ),
                 const SizedBox(height: 12),

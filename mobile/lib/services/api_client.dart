@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/glycadence_models.dart';
 
 class ApiClient {
-  static const String defaultBaseUrl = 'http://10.1.161.120:8010';
+  static String get defaultBaseUrl =>
+      kIsWeb ? 'http://127.0.0.1:8010' : 'http://10.1.161.120:8010';
   static const String _tokenKey = 'glycadence_access_token';
   static const String _baseUrlKey = 'glycadence_api_base_url';
 

@@ -158,7 +158,7 @@ export default function DashboardPage() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              GlyCadence Intelligence Dashboard
+              Intelligence Dashboard
             </h1>
             <p className="text-sm text-slate-600">
               Deterministic CGM analytics, provenance coverage, and safety-verified agent investigations.
@@ -177,7 +177,7 @@ export default function DashboardPage() {
         </div>
 
         {!token ? (
-          <Card className="max-w-md">
+          <Card className="mx-auto w-full max-w-md rounded-2xl border border-slate-200/80 dark:border-slate-700/50 shadow-lg">
             <CardHeader>
               <CardTitle>{authMode === "login" ? "Sign in to GlyCadence" : "Create Account"}</CardTitle>
               <CardDescription>
@@ -194,7 +194,7 @@ export default function DashboardPage() {
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="researcher@example.com"
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-[#0F4C5C] focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700/60 bg-white dark:bg-slate-950/70 px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder:text-[#94a3b8] focus:border-[#FF4D4D] focus:outline-none"
                   />
                 </div>
                 <div>
@@ -204,7 +204,7 @@ export default function DashboardPage() {
                     required
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
-                    className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm focus:border-[#0F4C5C] focus:outline-none"
+                    className="w-full rounded-xl border border-slate-300 dark:border-slate-700/60 bg-white dark:bg-slate-950/70 px-3.5 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder:text-[#94a3b8] focus:border-[#FF4D4D] focus:outline-none"
                   />
                 </div>
                 {authError && (
@@ -215,7 +215,7 @@ export default function DashboardPage() {
                 <button
                   type="submit"
                   disabled={authBusy}
-                  className="w-full rounded-xl bg-[#0F4C5C] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#0c3c49] disabled:opacity-60"
+                  className="w-full rounded-xl bg-[#FF4D4D] px-4 py-2.5 text-sm font-bold text-white shadow-sm transition-colors hover:bg-[#e63e3e] disabled:opacity-60"
                 >
                   {authBusy ? "Authenticating..." : authMode === "login" ? "Sign In" : "Register & Sign In"}
                 </button>
