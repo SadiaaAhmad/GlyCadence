@@ -100,6 +100,15 @@ export interface AgentObservationOut {
   evidence_refs: string[];
 }
 
+export interface AgentTraceStep {
+  node: string;
+  started_at: string;
+  ended_at: string;
+  status: string;
+  summary: string;
+  evidence_count: number;
+}
+
 export interface DoctorReportOut {
   id: string;
   investigation_id: string;
@@ -130,6 +139,8 @@ export interface InvestigationRun {
   safety_passed: boolean;
   verifier_report: VerifierReport;
   observations: AgentObservationOut[];
+  trace?: AgentTraceStep[];
+  cross_signal_findings?: string[];
   doctor_report: DoctorReportOut | null;
   evidence_items: EvidenceItem[];
   created_at: string;

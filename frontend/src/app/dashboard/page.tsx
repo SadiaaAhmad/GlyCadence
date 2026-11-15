@@ -14,7 +14,7 @@ import {
   ShieldAlert,
   ShieldCheck,
 } from "lucide-react";
-import { AppShell } from "@/components/layout/AppShell";
+
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { apiClient, getStoredToken, setStoredToken } from "@/services/api";
@@ -153,7 +153,7 @@ export default function DashboardPage() {
   const selectedPatient = patients.find((p) => p.id === selectedPatientId) ?? null;
 
   return (
-    <AppShell>
+    <>
       <div className="space-y-6">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
@@ -541,6 +541,6 @@ export default function DashboardPage() {
           </>
         )}
       </div>
-    </AppShell>
+    </>
   );
 }
