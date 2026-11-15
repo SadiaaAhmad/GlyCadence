@@ -1,7 +1,10 @@
 from app.analytics.baselines import (
     GlucosePoint,
+    MultipleDevicesError,
     compute_glucose_summary,
     prepare_glucose_points,
+    prepare_glucose_points_with_stats,
+    resolve_single_device_cgm_points,
 )
 from app.analytics.data_quality import (
     compute_cgm_coverage,
@@ -17,6 +20,7 @@ from app.analytics.medication_stats import compute_medication_pattern_summary
 
 __all__ = [
     "GlucosePoint",
+    "MultipleDevicesError",
     "compute_cgm_coverage",
     "compute_deterministic_confidence",
     "compute_glucose_drift",
@@ -26,4 +30,6 @@ __all__ = [
     "evaluate_single_meal_response",
     "infer_native_sampling_interval_min",
     "prepare_glucose_points",
+    "prepare_glucose_points_with_stats",
+    "resolve_single_device_cgm_points",
 ]

@@ -5,7 +5,8 @@ from app.analytics.baselines import (
     GlucosePoint,
     filter_and_count_provenance,
     filter_cgm_only,
-    prepare_glucose_points,
+    prepare_glucose_points_with_stats,
+    resolve_single_device_cgm_points,
 )
 from app.analytics.data_quality import DATE_SHIFTED_LIMITATION_NOTE, ensure_utc_dt
 from app.models import GlucoseReading, Meal
@@ -14,6 +15,7 @@ from app.schemas.analytics import (
     EvidenceItem,
     MealResponseItem,
     SourceRecordRef,
+    build_source_records_metadata,
 )
 
 PRE_MEAL_WINDOW_MIN = 30.0
@@ -34,18 +36,28 @@ def evaluate_single_meal_response(
     glucose_readings: Sequence[GlucoseReading | GlucosePoint | dict],
     meal_timestamp_semantics: str = "utc_exact",
     native_only: bool = True,
+    device_id: str | None = None,
 ) -> MealResponseItem:
     """Compute postprandial excursion and strict positive trapezoidal iAUC for one meal."""
     meal_ts = ensure_utc_dt(logged_at)
-    all_points = prepare_glucose_points(glucose_readings)
+    all_points, deduplicated_removed = prepare_glucose_points_with_stats(
+        glucose_readings, deduplicate_across_devices=False
+    )
+    cgm_all_points, _ = filter_cgm_only(all_points)
+    _, resolved_device_id, devices_present = resolve_single_device_cgm_points(
+        cgm_all_points, device_id=device_id
+    )
 
     pre_start = meal_ts - timedelta(minutes=PRE_MEAL_WINDOW_MIN)
     post_end = meal_ts + timedelta(minutes=POST_MEAL_WINDOW_MIN)
     window_points = [p for p in all_points if pre_start <= p.recorded_at <= post_end]
 
     cgm_window_points, excluded_non_cgm = filter_cgm_only(window_points)
+    cgm_window_device_points, _, _ = resolve_single_device_cgm_points(
+        cgm_window_points, device_id=device_id
+    )
     points, prov_counts, excluded_non_native = filter_and_count_provenance(
-        cgm_window_points, native_only=native_only
+        cgm_window_device_points, native_only=native_only
     )
     filter_mode = "native_only" if native_only else "include_non_native"
 
@@ -68,6 +80,10 @@ def evaluate_single_meal_response(
     if excluded_non_native > 0:
         uncertainty_notes.append(
             f"Excluded {excluded_non_native} non-native glucose reading(s) (interpolated/derived/unknown) in meal window."
+        )
+    if deduplicated_removed > 0:
+        uncertainty_notes.append(
+            f"Removed {deduplicated_removed} duplicate timestamp reading(s) during preparation."
         )
 
     anchor_point: GlucosePoint | None = None
@@ -129,6 +145,9 @@ def evaluate_single_meal_response(
             post_meal_reading_count=post_count,
             excluded_non_native_count=excluded_non_native,
             excluded_non_cgm_count=excluded_non_cgm,
+            deduplicated_removed_count=deduplicated_removed,
+            device_id=resolved_device_id,
+            devices_present=devices_present,
             native_only=native_only,
             include_non_native=not native_only,
             provenance_filter_mode=filter_mode,
@@ -139,6 +158,7 @@ def evaluate_single_meal_response(
             rejection_reasons=rejection_reasons,
             uncertainty_notes=uncertainty_notes,
             evidence=None,
+            evidence_items=[],
         )
 
     g0 = anchor_point.glucose_mg_dl
@@ -160,7 +180,7 @@ def evaluate_single_meal_response(
         2,
     )
 
-    source_refs = (
+    all_source_refs = (
         SourceRecordRef(
             table_name="meals",
             record_id=meal_id,
@@ -180,26 +200,60 @@ def evaluate_single_meal_response(
             for p in post_points
         ),
     )
+    src_meta = build_source_records_metadata(all_source_refs)
     datasets = tuple(
         sorted({meal_source_dataset, anchor_point.source_dataset, *(p.source_dataset for p in post_points)})
     )
 
-    evidence = EvidenceItem(
-        metric_name="postprandial_iauc_mg_dl_min",
+    def _build_meal_ev(
+        metric_name: str,
+        current_value: float | None,
+        unit: str,
+        method: str,
+        baseline_value: float | None = None,
+        delta_val: float | None = None,
+    ) -> EvidenceItem:
+        return EvidenceItem(
+            metric_name=metric_name,
+            baseline_value=baseline_value,
+            current_value=current_value,
+            delta=delta_val,
+            unit=unit,
+            observation_count=post_count + 1,
+            expected_observation_count=expected_post_count + 1,
+            window_start=anchor_point.recorded_at,
+            window_end=post_points[-1].recorded_at,
+            source_datasets=datasets,
+            **src_meta,
+            calculation_method=method,
+            calculation_version=CALCULATION_VERSION,
+            missingness_pct=missingness_pct,
+            uncertainty_notes=tuple(uncertainty_notes),
+        )
+
+    ev_iauc = _build_meal_ev(
+        "postprandial_iauc_mg_dl_min",
+        iauc_rounded,
+        "mg/dL*min",
+        "timestamp_positive_trapezoidal_iauc",
+        baseline_value=None,
+        delta_val=None,
+    )
+    ev_baseline = _build_meal_ev(
+        "pre_meal_baseline_glucose_mg_dl",
+        pre_val,
+        "mg/dL",
+        "nearest_pre_meal_anchor_within_30m",
         baseline_value=pre_val,
-        current_value=iauc_rounded,
-        delta=excursion_delta,
-        unit="mg/dL*min",
-        observation_count=post_count + 1,
-        expected_observation_count=expected_post_count + 1,
-        window_start=anchor_point.recorded_at,
-        window_end=post_points[-1].recorded_at,
-        source_datasets=datasets,
-        source_records=source_refs,
-        calculation_method="timestamp_positive_trapezoidal_iauc",
-        calculation_version=CALCULATION_VERSION,
-        missingness_pct=missingness_pct,
-        uncertainty_notes=tuple(uncertainty_notes),
+        delta_val=None,
+    )
+    ev_peak = _build_meal_ev(
+        "postprandial_peak_excursion_mg_dl",
+        peak_post,
+        "mg/dL",
+        "post_meal_peak_minus_pre_meal_anchor",
+        baseline_value=pre_val,
+        delta_val=excursion_delta,
     )
 
     return MealResponseItem(
@@ -217,6 +271,9 @@ def evaluate_single_meal_response(
         post_meal_reading_count=post_count,
         excluded_non_native_count=excluded_non_native,
         excluded_non_cgm_count=excluded_non_cgm,
+        deduplicated_removed_count=deduplicated_removed,
+        device_id=resolved_device_id,
+        devices_present=devices_present,
         native_only=native_only,
         include_non_native=not native_only,
         provenance_filter_mode=filter_mode,
@@ -226,7 +283,8 @@ def evaluate_single_meal_response(
         iauc_valid=True,
         rejection_reasons=[],
         uncertainty_notes=uncertainty_notes,
-        evidence=evidence,
+        evidence=ev_iauc,
+        evidence_items=[ev_iauc, ev_baseline, ev_peak],
     )
 
 
@@ -235,9 +293,14 @@ def evaluate_meal_responses(
     glucose_readings: Sequence[GlucoseReading | GlucosePoint | dict],
     *,
     native_only: bool = True,
+    device_id: str | None = None,
 ) -> list[MealResponseItem]:
     """Evaluate postprandial responses across a sequence of meals."""
-    points = prepare_glucose_points(glucose_readings)
+    points, _ = prepare_glucose_points_with_stats(
+        glucose_readings, deduplicate_across_devices=False
+    )
+    cgm_points, _ = filter_cgm_only(points)
+    resolve_single_device_cgm_points(cgm_points, device_id=device_id)
     results: list[MealResponseItem] = []
     for idx, meal in enumerate(meals):
         if isinstance(meal, dict):
@@ -268,6 +331,7 @@ def evaluate_meal_responses(
                 meal_timestamp_semantics=m_sem,
                 glucose_readings=points,
                 native_only=native_only,
+                device_id=device_id,
             )
         )
     return results

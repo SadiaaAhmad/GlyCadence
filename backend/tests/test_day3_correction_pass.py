@@ -254,3 +254,213 @@ def test_group_a_cbg_excluded_from_cgm_analytics_and_endpoint_native_only_params
                 db.flush()
                 db.delete(u)
                 db.commit()
+
+
+# ===========================================================================
+# GROUP B TESTS — Dual-CGM handling and evidence integrity
+# ===========================================================================
+def test_group_b_dual_device_order_invariance_and_multi_device_422():
+    ts = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc)
+    libre = {
+        "id": "libre-1",
+        "recorded_at": ts,
+        "glucose_mg_dl": 150.0,
+        "reading_type": "cgm",
+        "device_id": "FreeStyle_Libre_Pro",
+        "sampling_interval_min": 15,
+        "observation_provenance": "native",
+        "source_dataset": "cgmacros",
+    }
+    dexcom = {
+        "id": "dexcom-1",
+        "recorded_at": ts,
+        "glucose_mg_dl": 160.0,
+        "reading_type": "cgm",
+        "device_id": "Dexcom_G6_Pro",
+        "sampling_interval_min": 5,
+        "observation_provenance": "native",
+        "source_dataset": "cgmacros",
+    }
+
+    # 1. prepare_glucose_points default deduplicate_across_devices=False preserves both and is order-invariant
+    pts_a = prepare_glucose_points([libre, dexcom])
+    pts_b = prepare_glucose_points([dexcom, libre])
+    assert len(pts_a) == 2
+    assert pts_a == pts_b
+
+    # 2. Multi-device without device_id raises ValueError('multiple_devices_specify_device_id')
+    with pytest.raises(ValueError, match="multiple_devices_specify_device_id"):
+        compute_glucose_summary([libre, dexcom], native_only=True)
+
+    # 3. Specifying device_id selects only that device
+    sum_libre = compute_glucose_summary([libre, dexcom], device_id="FreeStyle_Libre_Pro", native_only=True)
+    assert sum_libre.observation_count == 1
+    assert sum_libre.mean_glucose_mg_dl == 150.0
+    assert sum_libre.device_id == "FreeStyle_Libre_Pro"
+
+    sum_dexcom = compute_glucose_summary([dexcom, libre], device_id="Dexcom_G6_Pro", native_only=True)
+    assert sum_dexcom.observation_count == 1
+    assert sum_dexcom.mean_glucose_mg_dl == 160.0
+    assert sum_dexcom.device_id == "Dexcom_G6_Pro"
+
+    # 4. API endpoint returns 422 multiple_devices_specify_device_id with devices_present when >1 device exists
+    email = f"groupb-{uuid.uuid4().hex[:8]}@example.com"
+    engine = get_engine()
+    try:
+        client.post("/api/v1/auth/register", json={"email": email, "password": "StrongPass123!"})
+        login = client.post("/api/v1/auth/login", json={"email": email, "password": "StrongPass123!"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        create_p = client.post(
+            "/api/v1/patients",
+            json={"display_name": "Group B User", "consent_granted": True, "consent_version": "v1.0"},
+            headers=headers,
+        )
+        pid = create_p.json()["id"]
+
+        with Session(engine) as db:
+            db.add_all(
+                [
+                    GlucoseReading(
+                        patient_id=uuid.UUID(pid),
+                        cohort_type="app_user",
+                        recorded_at=ts,
+                        glucose_mg_dl=150.0,
+                        raw_value=150.0,
+                        raw_unit="mg/dL",
+                        reading_type="cgm",
+                        device_id="FreeStyle_Libre_Pro",
+                        sampling_interval_min=15,
+                        observation_provenance="native",
+                        source_dataset="app_user",
+                    ),
+                    GlucoseReading(
+                        patient_id=uuid.UUID(pid),
+                        cohort_type="app_user",
+                        recorded_at=ts,
+                        glucose_mg_dl=160.0,
+                        raw_value=160.0,
+                        raw_unit="mg/dL",
+                        reading_type="cgm",
+                        device_id="Dexcom_G6_Pro",
+                        sampling_interval_min=5,
+                        observation_provenance="native",
+                        source_dataset="app_user",
+                    ),
+                ]
+            )
+            db.commit()
+
+        r_multi = client.get(f"/api/v1/patients/{pid}/analytics/summary", headers=headers)
+        assert r_multi.status_code == 422
+        detail = r_multi.json()["detail"]
+        assert detail["code"] == "multiple_devices_specify_device_id"
+        assert set(detail["devices_present"]) == {"Dexcom_G6_Pro", "FreeStyle_Libre_Pro"}
+
+        r_single = client.get(
+            f"/api/v1/patients/{pid}/analytics/summary?device_id=FreeStyle_Libre_Pro",
+            headers=headers,
+        )
+        assert r_single.status_code == 200
+        assert r_single.json()["mean_glucose_mg_dl"] == 150.0
+    finally:
+        with Session(engine) as db:
+            u = db.scalar(select(User).where(User.email == email))
+            if u is not None:
+                for p in db.scalars(select(Patient).where(Patient.user_id == u.id)).all():
+                    p.retention_expires_at = None
+                    db.flush()
+                    db.delete(p)
+                db.flush()
+                db.delete(u)
+                db.commit()
+
+
+def test_group_b_evidence_truncation_checksum_iauc_units_tbr_tar_and_single_reading_cv_none():
+    base_ts = datetime(2026, 5, 1, 8, 0, tzinfo=timezone.utc)
+
+    # 1. Single reading -> sd_glucose_mg_dl is None and cv_pct is None (not 0.0)
+    one_reading = [
+        {
+            "id": "single-1",
+            "recorded_at": base_ts,
+            "glucose_mg_dl": 125.0,
+            "reading_type": "cgm",
+            "observation_provenance": "native",
+            "source_dataset": "shanghai_t2dm",
+        }
+    ]
+    s_one = compute_glucose_summary(one_reading, native_only=True)
+    assert s_one.observation_count == 1
+    assert s_one.sd_glucose_mg_dl is None
+    assert s_one.cv_pct is None
+
+    # 2. 500 readings -> source_records_total == 500, source_records_truncated is True, checksum present,
+    #    and TBR / TBR2 / TAR / TAR2 EvidenceItems emitted
+    readings_500 = [
+        {
+            "id": f"rec-{i:04d}",
+            "recorded_at": base_ts + timedelta(minutes=15 * i),
+            "glucose_mg_dl": 50.0 if i == 0 else (65.0 if i == 1 else (195.0 if i == 2 else (260.0 if i == 3 else 120.0))),
+            "reading_type": "cgm",
+            "observation_provenance": "native",
+            "source_dataset": "shanghai_t2dm",
+        }
+        for i in range(500)
+    ]
+    s_500 = compute_glucose_summary(readings_500, native_only=True)
+    assert s_500.observation_count == 500
+    ev_by_name = {e.metric_name: e for e in s_500.evidence_items}
+    assert {
+        "mean_glucose_mg_dl",
+        "glucose_cv_pct",
+        "time_in_range_70_180_pct",
+        "time_below_range_lt_70_pct",
+        "time_below_range_level2_lt_54_pct",
+        "time_above_range_gt_180_pct",
+        "time_above_range_level2_gt_250_pct",
+    }.issubset(set(ev_by_name.keys()))
+    mean_ev = ev_by_name["mean_glucose_mg_dl"]
+    assert len(mean_ev.source_records) == 200
+    assert mean_ev.source_records_total == 500
+    assert mean_ev.source_records_truncated is True
+    assert len(mean_ev.source_record_set_checksum) == 64
+
+    # 3. iAUC evidence items have separate metrics with unmixed units
+    meal_ts = datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc)
+    meal_readings = [
+        {"id": "m-anchor", "recorded_at": meal_ts - timedelta(minutes=10), "glucose_mg_dl": 100.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "cgmacros"},
+        {"id": "m-1", "recorded_at": meal_ts + timedelta(minutes=15), "glucose_mg_dl": 120.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "cgmacros"},
+        {"id": "m-2", "recorded_at": meal_ts + timedelta(minutes=30), "glucose_mg_dl": 140.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "cgmacros"},
+        {"id": "m-3", "recorded_at": meal_ts + timedelta(minutes=60), "glucose_mg_dl": 160.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "cgmacros"},
+        {"id": "m-4", "recorded_at": meal_ts + timedelta(minutes=90), "glucose_mg_dl": 120.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "cgmacros"},
+        {"id": "m-5", "recorded_at": meal_ts + timedelta(minutes=120), "glucose_mg_dl": 90.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "cgmacros"},
+    ]
+    m_res = evaluate_single_meal_response(
+        meal_id="meal-b-1",
+        logged_at=meal_ts,
+        meal_type="lunch",
+        description="Group B Meal",
+        carbs_g=50.0,
+        meal_source_dataset="cgmacros",
+        glucose_readings=meal_readings,
+    )
+    assert m_res.iauc_valid is True
+    assert m_res.evidence is not None
+    assert m_res.evidence.metric_name == "postprandial_iauc_mg_dl_min"
+    assert m_res.evidence.unit == "mg/dL*min"
+    assert m_res.evidence.baseline_value is None
+    assert m_res.evidence.delta is None
+
+    meal_ev_map = {e.metric_name: e for e in m_res.evidence_items}
+    assert set(meal_ev_map.keys()) == {
+        "postprandial_iauc_mg_dl_min",
+        "pre_meal_baseline_glucose_mg_dl",
+        "postprandial_peak_excursion_mg_dl",
+    }
+    assert meal_ev_map["pre_meal_baseline_glucose_mg_dl"].unit == "mg/dL"
+    assert meal_ev_map["pre_meal_baseline_glucose_mg_dl"].current_value == 100.0
+    assert meal_ev_map["postprandial_peak_excursion_mg_dl"].unit == "mg/dL"
+    assert meal_ev_map["postprandial_peak_excursion_mg_dl"].baseline_value == 100.0
+    assert meal_ev_map["postprandial_peak_excursion_mg_dl"].current_value == 160.0
+    assert meal_ev_map["postprandial_peak_excursion_mg_dl"].delta == 60.0
+

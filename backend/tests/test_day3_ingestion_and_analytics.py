@@ -93,7 +93,7 @@ def test_glucose_summary_matches_manual_reference_calculations():
     assert round(summary.tbr_pct + summary.tir_pct + summary.tar_pct, 2) == 100.0
     assert summary.timezone_basis == ["assumed_study_location"]
     assert any("assumed_study_location" in n for n in summary.coverage.uncertainty_notes)
-    assert len(summary.evidence_items) == 3
+    assert len(summary.evidence_items) == 7
     assert any("assumed_study_location" in n for n in summary.evidence_items[0].uncertainty_notes)
 
 
@@ -621,7 +621,9 @@ def test_shanghai_t2dm_cgmacros_provenance_consent_immutability_and_medication_d
         all_cg_readings = list(
             db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == cg_p1.id)).all()
         )
-        cg_summary = compute_glucose_summary(all_cg_readings, native_only=True)
+        cg_summary = compute_glucose_summary(
+            all_cg_readings, native_only=True, device_id="FreeStyle_Libre_Pro"
+        )
         assert cg_summary.observation_count == 0
         assert cg_summary.unknown_observation_count == 4
         assert cg_summary.excluded_non_native_count == 4

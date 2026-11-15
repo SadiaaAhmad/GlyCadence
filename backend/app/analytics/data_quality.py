@@ -61,6 +61,9 @@ def compute_cgm_coverage(
     provenance_counts: dict[str, int] | None = None,
     excluded_non_native_count: int = 0,
     excluded_non_cgm_count: int = 0,
+    deduplicated_removed_count: int = 0,
+    device_id: str | None = None,
+    devices_present: Sequence[str] | None = None,
     native_only: bool = True,
     timestamp_semantics: Sequence[str] | None = None,
     timezone_basis: Sequence[str] | None = None,
@@ -80,6 +83,7 @@ def compute_cgm_coverage(
     }
     sem_list = sorted(set(timestamp_semantics)) if timestamp_semantics else ["utc_exact"]
     tz_basis_list = sorted(set(timezone_basis)) if timezone_basis else ["source_confirmed"]
+    dev_list = sorted(set(devices_present)) if devices_present else ([device_id] if device_id else [])
     cal_comparable = "date_shifted_relative" not in sem_list
     filter_mode = "native_only" if native_only else "include_non_native"
 
@@ -88,6 +92,10 @@ def compute_cgm_coverage(
         extra_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
     if "assumed_study_location" in tz_basis_list or "unknown" in tz_basis_list:
         extra_notes.append(ASSUMED_TIMEZONE_LIMITATION_NOTE)
+    if deduplicated_removed_count > 0:
+        extra_notes.append(
+            f"Removed {deduplicated_removed_count} duplicate timestamp observation(s) during preparation."
+        )
     if excluded_non_cgm_count > 0:
         extra_notes.append(
             f"Excluded {excluded_non_cgm_count} non-CGM reading(s) (e.g., cbg/fasting/pre_meal finger-stick observations) from CGM analytics."
@@ -129,6 +137,9 @@ def compute_cgm_coverage(
             unknown_observation_count=p_counts.get("unknown", 0),
             excluded_non_native_count=excluded_non_native_count,
             excluded_non_cgm_count=excluded_non_cgm_count,
+            deduplicated_removed_count=deduplicated_removed_count,
+            device_id=device_id,
+            devices_present=dev_list,
             native_only=native_only,
             include_non_native=not native_only,
             provenance_filter_mode=filter_mode,
@@ -251,6 +262,9 @@ def compute_cgm_coverage(
         unknown_observation_count=p_counts.get("unknown", 0),
         excluded_non_native_count=excluded_non_native_count,
         excluded_non_cgm_count=excluded_non_cgm_count,
+        deduplicated_removed_count=deduplicated_removed_count,
+        device_id=device_id,
+        devices_present=dev_list,
         native_only=native_only,
         include_non_native=not native_only,
         provenance_filter_mode=filter_mode,

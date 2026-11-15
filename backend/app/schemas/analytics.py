@@ -1,9 +1,11 @@
 from datetime import date, datetime, timedelta
-from typing import Literal
+import hashlib
+from typing import Literal, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CALCULATION_VERSION = "v1.2.0"
+CALCULATION_VERSION = "v1.3.0"
+MAX_EVIDENCE_SOURCE_RECORDS = 200
 
 
 class SourceRecordRef(BaseModel):
@@ -12,6 +14,23 @@ class SourceRecordRef(BaseModel):
     table_name: str
     record_id: str
     source_dataset: str
+
+
+def build_source_records_metadata(
+    full_refs: Sequence[SourceRecordRef],
+    max_items: int = MAX_EVIDENCE_SOURCE_RECORDS,
+) -> dict:
+    """Return capped source_records tuple along with total count, truncation flag, and SHA-256 checksum."""
+    total = len(full_refs)
+    truncated = total > max_items
+    sorted_keys = sorted(f"{r.table_name}:{r.record_id}:{r.source_dataset}" for r in full_refs)
+    checksum = hashlib.sha256("|".join(sorted_keys).encode("utf-8")).hexdigest()
+    return {
+        "source_records": tuple(full_refs[:max_items]),
+        "source_records_total": total,
+        "source_records_truncated": truncated,
+        "source_record_set_checksum": checksum,
+    }
 
 
 class EvidenceItem(BaseModel):
@@ -28,6 +47,9 @@ class EvidenceItem(BaseModel):
     window_end: datetime
     source_datasets: tuple[str, ...]
     source_records: tuple[SourceRecordRef, ...]
+    source_records_total: int = 0
+    source_records_truncated: bool = False
+    source_record_set_checksum: str = ""
     calculation_method: str
     calculation_version: str = CALCULATION_VERSION
     missingness_pct: float = Field(ge=0.0, le=100.0)
@@ -44,6 +66,14 @@ class EvidenceItem(BaseModel):
     def validate_chronological_window(self) -> "EvidenceItem":
         if self.window_start > self.window_end:
             raise ValueError("window_start must be <= window_end")
+        if self.source_records_total == 0 and len(self.source_records) > 0:
+            object.__setattr__(self, "source_records_total", len(self.source_records))
+        if not self.source_record_set_checksum and len(self.source_records) > 0:
+            sorted_keys = sorted(
+                f"{r.table_name}:{r.record_id}:{r.source_dataset}" for r in self.source_records
+            )
+            checksum = hashlib.sha256("|".join(sorted_keys).encode("utf-8")).hexdigest()
+            object.__setattr__(self, "source_record_set_checksum", checksum)
         return self
 
 
@@ -75,6 +105,9 @@ class CGMCoverageReport(BaseModel):
     unknown_observation_count: int = 0
     excluded_non_native_count: int = 0
     excluded_non_cgm_count: int = 0
+    deduplicated_removed_count: int = 0
+    device_id: str | None = None
+    devices_present: list[str] = Field(default_factory=list)
     native_only: bool = True
     include_non_native: bool = False
     provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
@@ -101,6 +134,9 @@ class GlucoseSummaryOut(BaseModel):
     unknown_observation_count: int = 0
     excluded_non_native_count: int = 0
     excluded_non_cgm_count: int = 0
+    deduplicated_removed_count: int = 0
+    device_id: str | None = None
+    devices_present: list[str] = Field(default_factory=list)
     native_only: bool = True
     include_non_native: bool = False
     provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
@@ -137,6 +173,9 @@ class MealResponseItem(BaseModel):
     post_meal_reading_count: int
     excluded_non_native_count: int = 0
     excluded_non_cgm_count: int = 0
+    deduplicated_removed_count: int = 0
+    device_id: str | None = None
+    devices_present: list[str] = Field(default_factory=list)
     native_only: bool = True
     include_non_native: bool = False
     provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
@@ -147,6 +186,7 @@ class MealResponseItem(BaseModel):
     rejection_reasons: list[str]
     uncertainty_notes: list[str]
     evidence: EvidenceItem | None = None
+    evidence_items: list[EvidenceItem] = Field(default_factory=list)
 
 
 class DriftSummaryOut(BaseModel):
@@ -163,6 +203,9 @@ class DriftSummaryOut(BaseModel):
     recent_observation_count: int = 0
     excluded_non_native_count: int = 0
     excluded_non_cgm_count: int = 0
+    deduplicated_removed_count: int = 0
+    device_id: str | None = None
+    devices_present: list[str] = Field(default_factory=list)
     native_only: bool = True
     include_non_native: bool = False
     provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
@@ -178,6 +221,7 @@ class DriftSummaryOut(BaseModel):
     deterministic_confidence: float
     uncertainty_notes: list[str]
     evidence: EvidenceItem | None = None
+    evidence_items: list[EvidenceItem] = Field(default_factory=list)
 
 
 class MedicationPatternSummaryOut(BaseModel):

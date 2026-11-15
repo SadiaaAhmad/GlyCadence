@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.analytics import (
+    MultipleDevicesError,
     compute_glucose_drift,
     compute_glucose_summary,
     compute_medication_pattern_summary,
@@ -48,6 +49,7 @@ def get_analytics_summary(
     end: datetime | None = Query(default=None),
     native_only: bool = Query(default=True),
     include_non_native: bool = Query(default=False),
+    device_id: str | None = Query(default=None),
 ) -> GlucoseSummaryOut:
     patient = require_patient_access(patient_id, current_user, db, write=False)
     s_utc, e_utc = _validate_window(start, end)
@@ -73,16 +75,28 @@ def get_analytics_summary(
             "cohort_type": patient.cohort_type,
             "actor_role": current_user.role,
             "native_only": effective_native_only,
+            "device_id": device_id,
         },
     )
     db.commit()
 
-    return compute_glucose_summary(
-        readings,
-        window_start=s_utc,
-        window_end=e_utc,
-        native_only=effective_native_only,
-    )
+    try:
+        return compute_glucose_summary(
+            readings,
+            window_start=s_utc,
+            window_end=e_utc,
+            native_only=effective_native_only,
+            device_id=device_id,
+        )
+    except MultipleDevicesError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "multiple_devices_specify_device_id",
+                "message": str(exc),
+                "devices_present": exc.devices_present,
+            },
+        ) from exc
 
 
 @router.get("/drift", response_model=DriftSummaryOut)
@@ -95,6 +109,7 @@ def get_analytics_drift(
     end: datetime | None = Query(default=None),
     native_only: bool = Query(default=True),
     include_non_native: bool = Query(default=False),
+    device_id: str | None = Query(default=None),
 ) -> DriftSummaryOut:
     patient = require_patient_access(patient_id, current_user, db, write=False)
     s_utc, e_utc = _validate_window(start, end)
@@ -120,11 +135,26 @@ def get_analytics_drift(
             "cohort_type": patient.cohort_type,
             "actor_role": current_user.role,
             "native_only": effective_native_only,
+            "device_id": device_id,
         },
     )
     db.commit()
 
-    return compute_glucose_drift(readings, native_only=effective_native_only)
+    try:
+        return compute_glucose_drift(
+            readings,
+            native_only=effective_native_only,
+            device_id=device_id,
+        )
+    except MultipleDevicesError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "multiple_devices_specify_device_id",
+                "message": str(exc),
+                "devices_present": exc.devices_present,
+            },
+        ) from exc
 
 
 @router.get("/meal-responses", response_model=list[MealResponseItem])
@@ -137,6 +167,7 @@ def get_analytics_meal_responses(
     end: datetime | None = Query(default=None),
     native_only: bool = Query(default=True),
     include_non_native: bool = Query(default=False),
+    device_id: str | None = Query(default=None),
 ) -> list[MealResponseItem]:
     patient = require_patient_access(patient_id, current_user, db, write=False)
     s_utc, e_utc = _validate_window(start, end)
@@ -169,11 +200,27 @@ def get_analytics_meal_responses(
             "cohort_type": patient.cohort_type,
             "actor_role": current_user.role,
             "native_only": effective_native_only,
+            "device_id": device_id,
         },
     )
     db.commit()
 
-    return evaluate_meal_responses(meals, readings, native_only=effective_native_only)
+    try:
+        return evaluate_meal_responses(
+            meals,
+            readings,
+            native_only=effective_native_only,
+            device_id=device_id,
+        )
+    except MultipleDevicesError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "multiple_devices_specify_device_id",
+                "message": str(exc),
+                "devices_present": exc.devices_present,
+            },
+        ) from exc
 
 
 @router.get("/medication-patterns", response_model=MedicationPatternSummaryOut)

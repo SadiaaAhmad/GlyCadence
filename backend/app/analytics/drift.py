@@ -7,7 +7,8 @@ from app.analytics.baselines import (
     GlucosePoint,
     filter_and_count_provenance,
     filter_cgm_only,
-    prepare_glucose_points,
+    prepare_glucose_points_with_stats,
+    resolve_single_device_cgm_points,
 )
 from app.analytics.data_quality import compute_cgm_coverage, compute_deterministic_confidence
 from app.models import GlucoseReading
@@ -16,6 +17,7 @@ from app.schemas.analytics import (
     DriftSummaryOut,
     EvidenceItem,
     SourceRecordRef,
+    build_source_records_metadata,
 )
 
 MIN_DRIFT_DELTA_MG_DL = 10.0
@@ -30,15 +32,21 @@ def compute_glucose_drift(
     *,
     split_ratio: float = 0.67,
     native_only: bool = True,
+    device_id: str | None = None,
 ) -> DriftSummaryOut:
     """Compute exploratory descriptive comparison between personal baseline and recent windows.
 
     Because CGM observations are serially correlated, ordinary independent-sample
     t-test p-values are not used to claim statistical significance.
     """
-    all_points = prepare_glucose_points(readings)
+    all_points, deduplicated_removed = prepare_glucose_points_with_stats(
+        readings, deduplicate_across_devices=False
+    )
     sem_list = sorted({p.timestamp_semantics for p in all_points}) if all_points else ["utc_exact"]
-    cgm_points, excluded_non_cgm = filter_cgm_only(all_points)
+    cgm_points_all, excluded_non_cgm = filter_cgm_only(all_points)
+    cgm_points, resolved_device_id, devices_present = resolve_single_device_cgm_points(
+        cgm_points_all, device_id=device_id
+    )
     points, prov_counts, excluded_non_native = filter_and_count_provenance(
         cgm_points, native_only=native_only
     )
@@ -70,6 +78,9 @@ def compute_glucose_drift(
             recent_observation_count=0,
             excluded_non_native_count=excluded_non_native,
             excluded_non_cgm_count=excluded_non_cgm,
+            deduplicated_removed_count=deduplicated_removed,
+            device_id=resolved_device_id,
+            devices_present=devices_present,
             native_only=native_only,
             include_non_native=not native_only,
             provenance_filter_mode=filter_mode,
@@ -101,11 +112,15 @@ def compute_glucose_drift(
         [p.recorded_at for p in baseline_pts],
         sampling_intervals=[p.sampling_interval_min for p in baseline_pts],
         timestamp_semantics=sem_list,
+        device_id=resolved_device_id,
+        devices_present=devices_present,
     )
     rec_cov = compute_cgm_coverage(
         [p.recorded_at for p in recent_pts],
         sampling_intervals=[p.sampling_interval_min for p in recent_pts],
         timestamp_semantics=sem_list,
+        device_id=resolved_device_id,
+        devices_present=devices_present,
     )
     overall_cov = compute_cgm_coverage(
         [p.recorded_at for p in points],
@@ -113,6 +128,9 @@ def compute_glucose_drift(
         provenance_counts=prov_counts,
         excluded_non_native_count=excluded_non_native,
         excluded_non_cgm_count=excluded_non_cgm,
+        deduplicated_removed_count=deduplicated_removed,
+        device_id=resolved_device_id,
+        devices_present=devices_present,
         native_only=native_only,
         timestamp_semantics=sem_list,
     )
@@ -126,14 +144,15 @@ def compute_glucose_drift(
     notes = [SERIAL_CORRELATION_DISCLAIMER, *overall_cov.uncertainty_notes]
 
     datasets = tuple(sorted({p.source_dataset for p in points}))
-    source_refs = tuple(
+    all_source_refs = tuple(
         SourceRecordRef(
             table_name="glucose_readings",
             record_id=p.record_id,
             source_dataset=p.source_dataset,
         )
-        for p in points[:200]
+        for p in points
     )
+    src_meta = build_source_records_metadata(all_source_refs)
 
     evidence = EvidenceItem(
         metric_name="exploratory_glucose_window_shift_mg_dl",
@@ -146,7 +165,7 @@ def compute_glucose_drift(
         window_start=points[0].recorded_at,
         window_end=points[-1].recorded_at,
         source_datasets=datasets,
-        source_records=source_refs,
+        **src_meta,
         calculation_method="exploratory_descriptive_window_comparison",
         calculation_version=CALCULATION_VERSION,
         missingness_pct=overall_cov.period_missingness_pct,
@@ -167,6 +186,9 @@ def compute_glucose_drift(
         recent_observation_count=len(recent_pts),
         excluded_non_native_count=excluded_non_native,
         excluded_non_cgm_count=excluded_non_cgm,
+        deduplicated_removed_count=deduplicated_removed,
+        device_id=resolved_device_id,
+        devices_present=devices_present,
         native_only=native_only,
         include_non_native=not native_only,
         provenance_filter_mode=filter_mode,
