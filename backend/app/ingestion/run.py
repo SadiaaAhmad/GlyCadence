@@ -15,9 +15,9 @@ from app.ingestion.cgmacros import (
     ingest_cgmacros_archive,
 )
 from app.ingestion.shanghai_t2dm import (
-    DEFAULT_DATASET_DOI as SHANGHAI_DOI,
-    DEFAULT_DATASET_VERSION as SHANGHAI_VERSION,
-    DEFAULT_SOURCE_URL as SHANGHAI_URL,
+    CANONICAL_DATASET_DOI as SHANGHAI_DOI,
+    CANONICAL_DATASET_VERSION as SHANGHAI_VERSION,
+    CANONICAL_SOURCE_URL as SHANGHAI_URL,
     ingest_shanghai_t2dm_archive,
 )
 from app.models import (

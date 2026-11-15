@@ -1064,3 +1064,58 @@ def test_audit_item_3_ingestion_accepted_and_rejected_reconcile_with_table_count
         db.close()
         outer_tx.rollback()
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Audit Item 5 — Dataset canonicalization (ShanghaiT2DM v3 default for archive pipeline)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_item_5_shanghai_archive_defaults_to_canonical_v3(tmp_path):
+    import inspect
+    import zipfile
+
+    import pandas as pd
+
+    from app.ingestion.run import SHANGHAI_DOI, SHANGHAI_URL, SHANGHAI_VERSION
+    from app.ingestion.shanghai_t2dm import (
+        CANONICAL_DATASET_DOI,
+        CANONICAL_DATASET_VERSION,
+        CANONICAL_SOURCE_URL,
+        ingest_shanghai_t2dm_archive,
+    )
+
+    sig = inspect.signature(ingest_shanghai_t2dm_archive)
+    assert sig.parameters["dataset_version"].default == "figshare-item-20444397-v3"
+    assert sig.parameters["dataset_doi"].default == "10.6084/m9.figshare.20444397.v3"
+    assert sig.parameters["source_url"].default == "https://ndownloader.figshare.com/files/38259264"
+    assert SHANGHAI_VERSION == CANONICAL_DATASET_VERSION
+    assert SHANGHAI_DOI == CANONICAL_DATASET_DOI
+    assert SHANGHAI_URL == CANONICAL_SOURCE_URL
+
+    # Verify archive ingestion without version overrides stamps canonical v3 metadata
+    mini_zip = tmp_path / "mini_shanghai_v3.zip"
+    df_sum = pd.DataFrame(
+        [{"Patient Number": "2099_0_20201116", "Age (years)": 62, "Gender (Female=1, Male=2)": 2}]
+    )
+    df_ts = pd.DataFrame([{"Date": "2020-11-16 08:00:00", "CGM (mg / dl)": 134.0}])
+    sum_xlsx = tmp_path / "Shanghai_T2DM_Summary.xlsx"
+    ts_xlsx = tmp_path / "2099_0_20201116.xlsx"
+    df_sum.to_excel(sum_xlsx, index=False)
+    df_ts.to_excel(ts_xlsx, index=False)
+    with zipfile.ZipFile(mini_zip, "w") as zf:
+        zf.write(sum_xlsx, arcname="Shanghai_T2DM_Summary.xlsx")
+        zf.write(ts_xlsx, arcname="Shanghai_T2DM/2099_0_20201116.xlsx")
+
+    conn = get_engine().connect()
+    outer_tx = conn.begin()
+    db = Session(bind=conn)
+    try:
+        rep = ingest_shanghai_t2dm_archive(db, mini_zip)
+        assert rep.dataset_version == "figshare-item-20444397-v3"
+        assert rep.dataset_doi == "10.6084/m9.figshare.20444397.v3"
+        assert rep.source_url == "https://ndownloader.figshare.com/files/38259264"
+    finally:
+        db.close()
+        outer_tx.rollback()
+        conn.close()

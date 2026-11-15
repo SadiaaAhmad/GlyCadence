@@ -33,10 +33,16 @@ from app.models import (
 )
 
 DATASET_NAME = "shanghai_t2dm"
-DEFAULT_DATASET_VERSION = "figshare-item-20444397-v1"
-DEFAULT_DATASET_DOI = "10.6084/m9.figshare.20444397.v1"
+CANONICAL_DATASET_VERSION = "figshare-item-20444397-v3"
+CANONICAL_DATASET_DOI = "10.6084/m9.figshare.20444397.v3"
+CANONICAL_SOURCE_URL = "https://ndownloader.figshare.com/files/38259264"
+LEGACY_V1_DATASET_VERSION = "figshare-item-20444397-v1"
+LEGACY_V1_DATASET_DOI = "10.6084/m9.figshare.20444397.v1"
+LEGACY_V1_SOURCE_URL = "https://ndownloader.figshare.com/files/36582306"
+DEFAULT_DATASET_VERSION = LEGACY_V1_DATASET_VERSION
+DEFAULT_DATASET_DOI = LEGACY_V1_DATASET_DOI
 DEFAULT_COLLECTION_DOI = "10.6084/m9.figshare.c.6310860.v1"
-DEFAULT_SOURCE_URL = "https://ndownloader.figshare.com/files/36582306"
+DEFAULT_SOURCE_URL = LEGACY_V1_SOURCE_URL
 LICENSE_IDENTIFIER = "CC BY 4.0"
 LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
 FREESTYLE_LIBRE_H_DEVICE = "FreeStyle_Libre_H"
@@ -834,14 +840,20 @@ def ingest_shanghai_t2dm_archive(
     db: Session,
     archive_path: Path | str,
     *,
-    dataset_version: str = DEFAULT_DATASET_VERSION,
-    dataset_doi: str = DEFAULT_DATASET_DOI,
-    source_url: str = DEFAULT_SOURCE_URL,
+    dataset_version: str = CANONICAL_DATASET_VERSION,
+    dataset_doi: str = CANONICAL_DATASET_DOI,
+    source_url: str = CANONICAL_SOURCE_URL,
     assumed_iana_tz: str | None = "Asia/Shanghai",
     source_verified_native_export: bool = False,
     native_evidence_reference: str | None = None,
 ) -> IngestionSummary:
-    """Safely extract a ShanghaiT2DM ZIP archive and ingest all T2DM summary & participant files."""
+    """Safely extract a ShanghaiT2DM ZIP archive and ingest all T2DM summary & participant files.
+
+    Defaults to the canonical Figshare v3 release (``data.zip``, ``10.6084/m9.figshare.20444397.v3``)
+    matching the 2023 *Scientific Data* publication (100 T2D patients across 109 admissions).
+    Legacy v1 (``Diabetes_dataset.zip``) is excluded from default pipelines and only ingested when
+    explicitly overridden.
+    """
     arch = Path(archive_path)
     archive_sha256 = compute_source_file_checksum(arch)
     with tempfile.TemporaryDirectory(prefix="glycadence_shanghai_") as tmp_dir:

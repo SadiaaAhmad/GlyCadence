@@ -6,25 +6,27 @@
 
 ---
 
-## 1. Reproducible CLI Commands
+## 1. Canonical Dataset Policy & Reproducible CLI Commands
+
+> [!IMPORTANT]
+> **Canonical ShanghaiT2DM Release (`v3`, `data.zip`):** Figshare item `20444397` **Version 3** (`data.zip`, DOI `10.6084/m9.figshare.20444397.v3`, `3,418,039` bytes) is the **canonical ShanghaiT2DM dataset** for GlyCadence, matching the published *Scientific Data* 10, 35 (2023) paper (`100` unique T2D patients across `109` hospital admissions).
+> - `ingest_shanghai_t2dm_archive()` and `python -m app.ingestion.run --dataset shanghai` default to **v3** (`figshare-item-20444397-v3`, `10.6084/m9.figshare.20444397.v3`).
+> - **Legacy `v1` (`Diabetes_dataset.zip`) is excluded from default ingestion pipelines** so `v1` and `v3` are never mixed in the same default cohort. `v1` is documented below for historical provenance comparison only and requires an explicit `--dataset-version figshare-item-20444397-v1` override.
 
 ```powershell
-# ShanghaiT2DM Figshare v1 (Diabetes_dataset.zip)
+# Canonical ShanghaiT2DM Figshare v3 (data.zip, Scientific Data 2023 release — DEFAULT)
 cd backend
+.\.venv\Scripts\python.exe -m app.ingestion.run `
+  --dataset shanghai `
+  --archive ../datasets/raw/Shanghai_data_v3.zip
+
+# Legacy ShanghaiT2DM Figshare v1 (Diabetes_dataset.zip — explicit override only, excluded from default pipeline)
 .\.venv\Scripts\python.exe -m app.ingestion.run `
   --dataset shanghai `
   --archive ../datasets/raw/Diabetes_dataset.zip `
   --dataset-version figshare-item-20444397-v1 `
   --dataset-doi 10.6084/m9.figshare.20444397.v1 `
   --source-url https://ndownloader.figshare.com/files/36582306
-
-# ShanghaiT2DM Figshare v3 (data.zip, Scientific Data 2023 release)
-.\.venv\Scripts\python.exe -m app.ingestion.run `
-  --dataset shanghai `
-  --archive ../datasets/raw/Shanghai_data_v3.zip `
-  --dataset-version figshare-item-20444397-v3 `
-  --dataset-doi 10.6084/m9.figshare.20444397.v3 `
-  --source-url https://ndownloader.figshare.com/files/38259264
 
 # CGMacros PhysioNet v1.0.0 (T2D cohort, HbA1c > 6.4%)
 .\.venv\Scripts\python.exe -m app.ingestion.run `

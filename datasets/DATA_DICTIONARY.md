@@ -34,22 +34,25 @@ GlyCadence strictly separates regular-file byte hashes, directory manifest hashe
 ### Official Access, Figshare Item/Collection Version Verification & License Evidence
 - **Publication:** Zhao, Q., Zhu, J., Shen, X., Lin, C., Zhang, Y., Liang, Y., Cao, B., Li, J., Liu, X., Rao, W., & Wang, C. *Chinese diabetes datasets for data-driven machine learning.* **Scientific Data** 10, 35 (2023). DOI: `https://doi.org/10.1038/s41597-023-01940-7`
 - **Official Figshare Metadata (Verified via Figshare REST API v2 — committed verbatim in `docs/provenance/figshare_20444397_v1.json`, `v2.json`, and `v3.json`):**
-  1. **Primary Figshare Dataset Item (`20444397`, Version `1` — Default Reference Target):**
+  1. **Canonical Release — Figshare Dataset Item (`20444397`, Version `3` — Default Archive Pipeline Target):**
+     - **Canonical Status:** **`v3` (`data.zip`, `10.6084/m9.figshare.20444397.v3`) is the canonical ShanghaiT2DM dataset for GlyCadence**, matching the published 2023 *Scientific Data* paper (Zhao et al., 2023: 100 unique T2D patients across 109 hospital admissions).
+     - **Versioned Item DOI:** `10.6084/m9.figshare.20444397.v3` (`https://doi.org/10.6084/m9.figshare.20444397.v3`)
+     - **API Timestamps (`figshare_20444397_v3.json`):** `created_date: "2022-11-20T07:14:35Z"`, `published_date: "2022-11-20T07:14:35Z"`, `modified_date: "2022-11-20T07:14:36Z"`
+     - **Archive File & Download URL:** `data.zip` (Figshare file ID `38259264`, `https://ndownloader.figshare.com/files/38259264`, exact byte size **`3,418,039` bytes** (`"size": 3418039`), `supplied_md5` / `computed_md5`: `ecadc819dd20aeb92d60ce41ceb16fd2`, verified on-disk SHA-256: `5ea3d97d189edc38de69a73ab5a7b653085c5cda4691b2eabe2a474295e0d05e`)
+     - **Contents of `data.zip` (v3):** `Shanghai_T2DM_Summary.xlsx` (sheet `'T2DM'`, 109 rows across 100 unique T2D participants) + 109 workbooks (`Shanghai_T2DM/2000_0_20201230.xlsx` .. `2099_0_20201116.xls`, 20 `.xlsx` + 89 `.xls`).
+     - **License:** **`CC BY 4.0`** (`https://creativecommons.org/licenses/by/4.0/`)
+  2. **Legacy Pre-Publication Release — Figshare Dataset Item (`20444397`, Version `1` — Excluded from Default Pipelines):**
+     - **Exclusion Policy:** **`v1` (`Diabetes_dataset.zip`) is excluded from default archive ingestion pipelines** (`ingest_shanghai_t2dm_archive()` and `python -m app.ingestion.run --dataset shanghai` default to `v3` `10.6084/m9.figshare.20444397.v3`) so `v1` and `v3` are never mixed in the same default cohort. `v1` is retained in documentation and provenance audit logs for historical reproducibility only and requires explicit `--dataset-version figshare-item-20444397-v1` override to ingest.
      - **Title:** *Diabetes Datasets-ShanghaiT1DM and ShanghaiT2DM*
      - **Versioned Item DOI:** `10.6084/m9.figshare.20444397.v1` (`https://doi.org/10.6084/m9.figshare.20444397.v1`)
      - **API Timestamps (`figshare_20444397_v1.json`):** `created_date: "2022-08-06T16:25:02Z"`, `published_date: "2022-08-06T16:25:02Z"`, `modified_date: "2022-11-20T07:14:35Z"`
      - **Archive File & Download URL:** `Diabetes_dataset.zip` (Figshare file ID `36582306`, `https://ndownloader.figshare.com/files/36582306`, exact byte size **`732,371` bytes** (`"size": 732371`), `supplied_md5` / `computed_md5`: `ef6531d11f9ba26e88c387ecb2e47fa9`, verified on-disk SHA-256: `f42ceec19b95010c15aa8fa7b0a9d9a3e1a0977680ee8f1089145e81b6ca2b67`)
-     - **Contents of `Diabetes_dataset.zip` (v1):** `ShanghaiT2DM.xlsx` (86 T2DM participants across 2 sheets: `'Sheet1'` in Chinese and `'翻译后'` in English) + 90 CSV files (`ShanghaiT2DM/1018_0.csv` .. `ShanghaiT2DM/1110_1.csv`).
+     - **Contents of `Diabetes_dataset.zip` (v1):** `ShanghaiT2DM.xlsx` (86 T2DM rows across 2 sheets: `'Sheet1'` in Chinese and `'翻译后'` in English) + 90 CSV files (`ShanghaiT2DM/1018_0.csv` .. `ShanghaiT2DM/1110_1.csv`, 84 unique participant IDs).
      - **License:** **`CC BY 4.0`** (`https://creativecommons.org/licenses/by/4.0/`)
-  2. **Figshare Dataset Item (`20444397`, Version `3` — Expanded 100-Patient / 109-Admission Workbook Release):**
-     - **Versioned Item DOI:** `10.6084/m9.figshare.20444397.v3` (`https://doi.org/10.6084/m9.figshare.20444397.v3`)
-     - **API Timestamps (`figshare_20444397_v3.json`):** `created_date: "2022-11-20T07:14:35Z"`, `published_date: "2022-11-20T07:14:35Z"`, `modified_date: "2022-11-20T07:14:36Z"`
-     - **Archive File & Download URL:** `data.zip` (Figshare file ID `38259264`, `https://ndownloader.figshare.com/files/38259264`, exact byte size **`3,418,039` bytes** (`"size": 3418039`), `supplied_md5` / `computed_md5`: `ecadc819dd20aeb92d60ce41ceb16fd2`)
-     - **Contents of `data.zip` (v3):** `Shanghai_T2DM_Summary.xlsx` (sheet `'T2DM'`, 109 rows across 100 unique T2D participants) + 109 workbooks (`Shanghai_T2DM/2000_0_20201230.xlsx` .. `2099_0_20201116.xls`, 20 `.xlsx` + 89 `.xls`).
   3. **Associated Figshare Collection (`6310860`):**
      - **Collection Title:** *Chinese diabetes datasets for data-driven machine learning*
      - **Collection DOIs:** Version 1: `10.6084/m9.figshare.c.6310860.v1` (`2023-01-12`); Version 2: `10.6084/m9.figshare.c.6310860.v2` (`2023-03-21`)
-  - **GlyCadence Provenance Pinning:** `ingest_shanghai_t2dm()` and `ingest_shanghai_t2dm_archive()` default to pinning `dataset_version = 'figshare-item-20444397-v1'`, `dataset_doi = '10.6084/m9.figshare.20444397.v1'`, `source_url = 'https://ndownloader.figshare.com/files/36582306'`, `license_identifier = 'CC BY 4.0'`, and `license_url = 'https://creativecommons.org/licenses/by/4.0/'` (and accept explicit overrides when importing `10.6084/m9.figshare.20444397.v3`).
+  - **GlyCadence Provenance Pinning:** `ingest_shanghai_t2dm_archive()` and the CLI (`python -m app.ingestion.run --dataset shanghai`) default to pinning the canonical **v3** metadata (`dataset_version = 'figshare-item-20444397-v3'`, `dataset_doi = '10.6084/m9.figshare.20444397.v3'`, `source_url = 'https://ndownloader.figshare.com/files/38259264'`, `license_identifier = 'CC BY 4.0'`, `license_url = 'https://creativecommons.org/licenses/by/4.0/'`).
 
 ### Cohort, Sampling & Timezone Basis Semantics
 - **Participants:** 86 T2D participants (90 admissions) in v1 (`Diabetes_dataset.zip`) and 100 T2D participants (109 admissions) in v3 (`data.zip`). Any `ShanghaiT1DM` (`T1D`) records are strictly rejected (`t1d_cohort_mixing_forbidden`).
