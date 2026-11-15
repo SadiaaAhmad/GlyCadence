@@ -1119,3 +1119,22 @@ def test_audit_item_5_shanghai_archive_defaults_to_canonical_v3(tmp_path):
         db.close()
         outer_tx.rollback()
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Audit Item 6 — Refactor evaluate_single_meal_response into clean public + sliced paths
+# ---------------------------------------------------------------------------
+
+
+def test_audit_item_6_evaluate_single_meal_response_has_no_private_underscore_params():
+    import inspect
+
+    from app.analytics.meal_response import (
+        _evaluate_sliced_meal_window,
+        evaluate_single_meal_response,
+    )
+
+    sig = inspect.signature(evaluate_single_meal_response)
+    private_params = [name for name in sig.parameters if name.startswith("_")]
+    assert private_params == [], f"Found private parameters on public API: {private_params}"
+    assert callable(_evaluate_sliced_meal_window)
