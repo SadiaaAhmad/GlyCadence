@@ -1,3 +1,4 @@
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
 from typing import Sequence
 
@@ -23,6 +24,17 @@ POST_MEAL_WINDOW_MIN = 180.0
 MIN_POST_MEAL_READINGS = 5
 MIN_POST_MEAL_SPAN_MIN = 120.0
 MAX_PERMISSIBLE_GAP_MIN = 30.0
+IAUC_CALCULATION_METHOD = (
+    "timestamp_positive_trapezoidal_iauc_from_meal_t0_with_anchor_gap_chain"
+)
+
+
+def _extract_raw_recorded_at(item: GlucoseReading | GlucosePoint | dict) -> datetime:
+    if isinstance(item, GlucosePoint):
+        return item.recorded_at
+    if isinstance(item, dict):
+        return ensure_utc_dt(item["recorded_at"])
+    return ensure_utc_dt(item.recorded_at)
 
 
 def evaluate_single_meal_response(
@@ -37,25 +49,93 @@ def evaluate_single_meal_response(
     meal_timestamp_semantics: str = "utc_exact",
     native_only: bool = True,
     device_id: str | None = None,
+    _prepared_window_already_sliced: bool = False,
+    _resolved_device_id: str | None = None,
+    _devices_present: list[str] | None = None,
+    _window_dedup_removed: int | None = None,
 ) -> MealResponseItem:
-    """Compute postprandial excursion and strict positive trapezoidal iAUC for one meal."""
-    meal_ts = ensure_utc_dt(logged_at)
-    all_points, deduplicated_removed = prepare_glucose_points_with_stats(
-        glucose_readings, deduplicate_across_devices=False
-    )
-    cgm_all_points, _ = filter_cgm_only(all_points)
-    _, resolved_device_id, devices_present = resolve_single_device_cgm_points(
-        cgm_all_points, device_id=device_id
-    )
+    """Compute postprandial excursion and strict positive trapezoidal iAUC for one meal.
 
+    Integration convention (documented in ``calculation_method``):
+    - Baseline anchor ``G_anchor`` is the closest native CGM reading within ``[-30 min, 0 min]`` of ``meal_ts``.
+    - Gap validation builds the full timestamp chain starting at the anchor timestamp:
+      ``[anchor_point.recorded_at, post_1.recorded_at, ..., post_n.recorded_at]``.
+      If ``(post_1.recorded_at - anchor_point.recorded_at) > 30 min``, the meal is rejected with
+      ``"first_post_meal_reading_gt_30m_after_anchor"`` and ``"consecutive_sampling_gap_gt_30m"``.
+    - Positive trapezoidal integration starts at ``t = 0.0`` (meal timestamp with zero excursion ``0.0``)
+      through each post-meal observation ``max(G(t_i) - G_anchor, 0.0)``.
+    """
+    meal_ts = ensure_utc_dt(logged_at)
     pre_start = meal_ts - timedelta(minutes=PRE_MEAL_WINDOW_MIN)
     post_end = meal_ts + timedelta(minutes=POST_MEAL_WINDOW_MIN)
-    window_points = [p for p in all_points if pre_start <= p.recorded_at <= post_end]
+
+    if _prepared_window_already_sliced:
+        window_points = list(glucose_readings)  # type: ignore[arg-type]
+        deduplicated_removed = _window_dedup_removed or 0
+        resolved_device_id = _resolved_device_id
+        devices_present = list(_devices_present or [])
+    else:
+        # Filter to [meal - 30 min, meal + 180 min] BEFORE sorting/deduplicating (C3)
+        raw_window = [
+            r for r in glucose_readings if pre_start <= _extract_raw_recorded_at(r) <= post_end
+        ]
+        # Still inspect device set on full input if needed so multi-device series are never silently mixed
+        all_devices = sorted(
+            {
+                (
+                    r.device_id
+                    if isinstance(r, GlucosePoint)
+                    else (r.get("device_id") if isinstance(r, dict) else r.device_id)
+                )
+                for r in glucose_readings
+                if (
+                    (
+                        r.reading_type
+                        if isinstance(r, GlucosePoint)
+                        else (
+                            (r.get("reading_type") or "cgm")
+                            if isinstance(r, dict)
+                            else (r.reading_type or "cgm")
+                        )
+                    )
+                    == "cgm"
+                )
+                and (
+                    r.device_id
+                    if isinstance(r, GlucosePoint)
+                    else (r.get("device_id") if isinstance(r, dict) else r.device_id)
+                )
+            }
+        )
+        window_points, deduplicated_removed = prepare_glucose_points_with_stats(
+            raw_window, deduplicate_across_devices=False
+        )
+        if device_id is None and len(all_devices) > 1:
+            resolve_single_device_cgm_points(
+                [
+                    GlucosePoint(
+                        record_id=f"dev-{d}",
+                        recorded_at=meal_ts,
+                        glucose_mg_dl=100.0,
+                        source_dataset=meal_source_dataset,
+                        device_id=d,
+                    )
+                    for d in all_devices
+                ],
+                device_id=None,
+            )
+        resolved_device_id = device_id if device_id is not None else (all_devices[0] if len(all_devices) == 1 else None)
+        devices_present = all_devices
 
     cgm_window_points, excluded_non_cgm = filter_cgm_only(window_points)
-    cgm_window_device_points, _, _ = resolve_single_device_cgm_points(
+    cgm_window_device_points, win_dev_id, win_devs = resolve_single_device_cgm_points(
         cgm_window_points, device_id=device_id
     )
+    if resolved_device_id is None:
+        resolved_device_id = win_dev_id
+    if not devices_present:
+        devices_present = win_devs
+
     points, prov_counts, excluded_non_native = filter_and_count_provenance(
         cgm_window_device_points, native_only=native_only
     )
@@ -111,9 +191,25 @@ def evaluate_single_meal_response(
         )
 
     max_gap_min: float | None = None
-    if post_times_min:
-        path_times = [0.0, *post_times_min]
-        gaps = [path_times[i + 1] - path_times[i] for i in range(len(path_times) - 1)]
+    if post_points:
+        if anchor_point is not None:
+            first_gap_from_anchor = (
+                post_points[0].recorded_at - anchor_point.recorded_at
+            ).total_seconds() / 60.0
+            if first_gap_from_anchor > MAX_PERMISSIBLE_GAP_MIN + 1e-6:
+                rejection_reasons.append("first_post_meal_reading_gt_30m_after_anchor")
+                uncertainty_notes.append(
+                    f"First post-meal reading is {first_gap_from_anchor:.1f} min after pre-meal anchor (>30.0 min limit)."
+                )
+            chain_timestamps = [anchor_point.recorded_at, *(p.recorded_at for p in post_points)]
+            gaps = [
+                (chain_timestamps[i + 1] - chain_timestamps[i]).total_seconds() / 60.0
+                for i in range(len(chain_timestamps) - 1)
+            ]
+        else:
+            path_times = [0.0, *post_times_min]
+            gaps = [path_times[i + 1] - path_times[i] for i in range(len(path_times) - 1)]
+
         max_gap_min = round(max(gaps), 2)
         if max_gap_min > MAX_PERMISSIBLE_GAP_MIN + 1e-6:
             rejection_reasons.append("consecutive_sampling_gap_gt_30m")
@@ -235,7 +331,7 @@ def evaluate_single_meal_response(
         "postprandial_iauc_mg_dl_min",
         iauc_rounded,
         "mg/dL*min",
-        "timestamp_positive_trapezoidal_iauc",
+        IAUC_CALCULATION_METHOD,
         baseline_value=None,
         delta_val=None,
     )
@@ -295,12 +391,16 @@ def evaluate_meal_responses(
     native_only: bool = True,
     device_id: str | None = None,
 ) -> list[MealResponseItem]:
-    """Evaluate postprandial responses across a sequence of meals."""
-    points, _ = prepare_glucose_points_with_stats(
+    """Evaluate postprandial responses across a sequence of meals using O(N log N + M log N) bisect slicing."""
+    points, total_dedup_removed = prepare_glucose_points_with_stats(
         glucose_readings, deduplicate_across_devices=False
     )
     cgm_points, _ = filter_cgm_only(points)
-    resolve_single_device_cgm_points(cgm_points, device_id=device_id)
+    _, resolved_device_id, devices_present = resolve_single_device_cgm_points(
+        cgm_points, device_id=device_id
+    )
+    point_timestamps = [p.recorded_at for p in points]
+
     results: list[MealResponseItem] = []
     for idx, meal in enumerate(meals):
         if isinstance(meal, dict):
@@ -320,6 +420,12 @@ def evaluate_meal_responses(
             m_ds = meal.source_dataset
             m_sem = getattr(meal, "timestamp_semantics", "utc_exact") or "utc_exact"
 
+        pre_start = m_ts - timedelta(minutes=PRE_MEAL_WINDOW_MIN)
+        post_end = m_ts + timedelta(minutes=POST_MEAL_WINDOW_MIN)
+        left_idx = bisect_left(point_timestamps, pre_start)
+        right_idx = bisect_right(point_timestamps, post_end)
+        sliced_points = points[left_idx:right_idx]
+
         results.append(
             evaluate_single_meal_response(
                 meal_id=m_id,
@@ -329,9 +435,13 @@ def evaluate_meal_responses(
                 carbs_g=m_carbs,
                 meal_source_dataset=m_ds,
                 meal_timestamp_semantics=m_sem,
-                glucose_readings=points,
+                glucose_readings=sliced_points,
                 native_only=native_only,
                 device_id=device_id,
+                _prepared_window_already_sliced=True,
+                _resolved_device_id=resolved_device_id,
+                _devices_present=devices_present,
+                _window_dedup_removed=total_dedup_removed,
             )
         )
     return results

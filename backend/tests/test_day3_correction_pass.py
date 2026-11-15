@@ -464,3 +464,131 @@ def test_group_b_evidence_truncation_checksum_iauc_units_tbr_tar_and_single_read
     assert meal_ev_map["postprandial_peak_excursion_mg_dl"].current_value == 160.0
     assert meal_ev_map["postprandial_peak_excursion_mg_dl"].delta == 60.0
 
+
+# ---------------------------------------------------------------------------
+# Group C — iAUC must match the approved spec (anchor gap chain & boundaries)
+# ---------------------------------------------------------------------------
+def test_group_c_iauc_anchor_gap_chain_and_boundary_cases():
+    meal_ts = datetime(2026, 5, 3, 12, 0, tzinfo=timezone.utc)
+
+    def _mk_pts(anchor_offset_min: float, post_offsets_min: list[float]) -> list[dict]:
+        pts = [
+            {
+                "id": "anchor",
+                "recorded_at": meal_ts + timedelta(minutes=anchor_offset_min),
+                "glucose_mg_dl": 100.0,
+                "reading_type": "cgm",
+                "observation_provenance": "native",
+                "source_dataset": "cgmacros",
+            }
+        ]
+        for idx, off in enumerate(post_offsets_min):
+            pts.append(
+                {
+                    "id": f"post-{idx}",
+                    "recorded_at": meal_ts + timedelta(minutes=off),
+                    "glucose_mg_dl": 140.0,
+                    "reading_type": "cgm",
+                    "observation_provenance": "native",
+                    "source_dataset": "cgmacros",
+                }
+            )
+        return pts
+
+    # 1. Reproduced defect: anchor at -25 min, first post at +10 min (35 min gap from anchor > 30 min),
+    #    7 post readings spanning 130 min -> MUST be rejected!
+    reproduced_pts = _mk_pts(-25.0, [10.0, 30.0, 50.0, 70.0, 90.0, 110.0, 130.0])
+    res_repro = evaluate_single_meal_response(
+        meal_id="meal-c-repro",
+        logged_at=meal_ts,
+        meal_type="lunch",
+        description="Anchor -25m, first post +10m (35m gap)",
+        carbs_g=60.0,
+        meal_source_dataset="cgmacros",
+        glucose_readings=reproduced_pts,
+    )
+    assert res_repro.iauc_valid is False
+    assert res_repro.iauc_mg_dl_min is None
+    assert "first_post_meal_reading_gt_30m_after_anchor" in res_repro.rejection_reasons
+    assert "consecutive_sampling_gap_gt_30m" in res_repro.rejection_reasons
+    assert res_repro.max_consecutive_gap_minutes == 35.0
+
+    # 2. Anchor at -10 min, first post at +20 min (exact 30.0 min gap from anchor) -> ACCEPTED
+    accepted_30m_pts = _mk_pts(-10.0, [20.0, 45.0, 70.0, 95.0, 120.0])
+    res_30m = evaluate_single_meal_response(
+        meal_id="meal-c-30m",
+        logged_at=meal_ts,
+        meal_type="lunch",
+        description="Anchor -10m, first post +20m (30.0m gap)",
+        carbs_g=60.0,
+        meal_source_dataset="cgmacros",
+        glucose_readings=accepted_30m_pts,
+    )
+    assert res_30m.iauc_valid is True
+    assert res_30m.max_consecutive_gap_minutes == 30.0
+    assert res_30m.evidence is not None
+    assert (
+        res_30m.evidence.calculation_method
+        == "timestamp_positive_trapezoidal_iauc_from_meal_t0_with_anchor_gap_chain"
+    )
+    # Hand-computed reference from t=0 (meal timestamp with zero excursion):
+    # [0, 20]: 0.5*(0+40)*20 = 400
+    # [20, 120]: 40 * 100 = 4000 -> total = 4400.0 mg/dL*min
+    assert res_30m.iauc_mg_dl_min == 4400.0
+
+    # 3. Boundary: 30.01 min gap from anchor (-10.0 min to +20.01 min) -> REJECTED
+    rejected_3001_pts = _mk_pts(-10.0, [20.01, 45.0, 70.0, 95.0, 120.0])
+    res_3001 = evaluate_single_meal_response(
+        meal_id="meal-c-3001",
+        logged_at=meal_ts,
+        meal_type="lunch",
+        description="30.01m gap",
+        carbs_g=60.0,
+        meal_source_dataset="cgmacros",
+        glucose_readings=rejected_3001_pts,
+    )
+    assert res_3001.iauc_valid is False
+    assert "first_post_meal_reading_gt_30m_after_anchor" in res_3001.rejection_reasons
+    assert "consecutive_sampling_gap_gt_30m" in res_3001.rejection_reasons
+
+    # 4. Boundary: 4 vs 5 post-meal readings, and duplicate timestamps do NOT count as distinct readings
+    four_distinct_with_dup = _mk_pts(-5.0, [20.0, 50.0, 80.0, 120.0])
+    four_distinct_with_dup.append(
+        {
+            "id": "post-dup-at-120",
+            "recorded_at": meal_ts + timedelta(minutes=120.0),
+            "glucose_mg_dl": 145.0,
+            "reading_type": "cgm",
+            "observation_provenance": "native",
+            "source_dataset": "cgmacros",
+        }
+    )
+    res_4dup = evaluate_single_meal_response(
+        meal_id="meal-c-4dup",
+        logged_at=meal_ts,
+        meal_type="lunch",
+        description="4 distinct + 1 duplicate",
+        carbs_g=60.0,
+        meal_source_dataset="cgmacros",
+        glucose_readings=four_distinct_with_dup,
+    )
+    assert res_4dup.post_meal_reading_count == 4
+    assert res_4dup.deduplicated_removed_count == 1
+    assert res_4dup.iauc_valid is False
+    assert "insufficient_post_meal_readings_lt_5" in res_4dup.rejection_reasons
+
+    # 5. Boundary: span 119.0 min vs 120.0 min
+    span_119_pts = _mk_pts(-5.0, [20.0, 45.0, 70.0, 95.0, 119.0])
+    res_119 = evaluate_single_meal_response(
+        meal_id="meal-c-119",
+        logged_at=meal_ts,
+        meal_type="lunch",
+        description="Span 119m",
+        carbs_g=60.0,
+        meal_source_dataset="cgmacros",
+        glucose_readings=span_119_pts,
+    )
+    assert res_119.iauc_valid is False
+    assert "insufficient_post_meal_window_span_lt_120m" in res_119.rejection_reasons
+
+

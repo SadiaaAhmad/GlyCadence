@@ -105,6 +105,7 @@ def test_meal_response_iauc_manual_reference_and_boundary_rejections():
     valid_readings = [
         {"id": "g-pre-early", "recorded_at": meal_ts - timedelta(minutes=25), "glucose_mg_dl": 108.0, "source_dataset": "cgmacros", "observation_provenance": "native", "timestamp_semantics": "date_shifted_relative"},
         {"id": "g-anchor", "recorded_at": meal_ts - timedelta(minutes=10), "glucose_mg_dl": 100.0, "source_dataset": "cgmacros", "observation_provenance": "native", "timestamp_semantics": "date_shifted_relative"},
+        {"id": "g-0", "recorded_at": meal_ts + timedelta(minutes=15), "glucose_mg_dl": 120.0, "source_dataset": "cgmacros", "observation_provenance": "native", "timestamp_semantics": "date_shifted_relative"},
         {"id": "g-1", "recorded_at": meal_ts + timedelta(minutes=30), "glucose_mg_dl": 140.0, "source_dataset": "cgmacros", "observation_provenance": "native", "timestamp_semantics": "date_shifted_relative"},
         {"id": "g-2", "recorded_at": meal_ts + timedelta(minutes=60), "glucose_mg_dl": 160.0, "source_dataset": "cgmacros", "observation_provenance": "native", "timestamp_semantics": "date_shifted_relative"},
         {"id": "g-3", "recorded_at": meal_ts + timedelta(minutes=90), "glucose_mg_dl": 120.0, "source_dataset": "cgmacros", "observation_provenance": "native", "timestamp_semantics": "date_shifted_relative"},
@@ -153,7 +154,7 @@ def test_meal_response_iauc_manual_reference_and_boundary_rejections():
     assert "missing_pre_meal_baseline_anchor_within_30m" in res_no_anchor.rejection_reasons
 
     # Boundary Failure 2: Fewer than 5 post-meal readings
-    few_post_readings = [valid_readings[1], *valid_readings[2:6]]
+    few_post_readings = [valid_readings[1], *valid_readings[3:7]]
     res_few = evaluate_single_meal_response(
         meal_id="meal-few",
         logged_at=meal_ts,
