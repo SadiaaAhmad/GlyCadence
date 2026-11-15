@@ -12,10 +12,10 @@ from app.ingestion.common import (
     ObservationProvenanceType,
     RejectionTracker,
     compute_input_payload_checksum,
-    compute_source_file_checksum,
     is_missing_value,
     normalize_glucose_reading,
     parse_timestamp_with_semantics,
+    resolve_source_checksums,
 )
 from app.models import (
     ActivityRecord,
@@ -28,7 +28,10 @@ from app.models import (
 
 DATASET_NAME = "cgmacros"
 DEFAULT_DATASET_VERSION = "physionet-cgmacros-v1.0.0"
+DEFAULT_DATASET_DOI = "10.13026/3z8q-x658"
+DEFAULT_SOURCE_URL = "https://physionet.org/content/cgmacros/1.0.0/"
 LICENSE_IDENTIFIER = "CC BY-NC-SA 4.0"
+LICENSE_URL = "https://creativecommons.org/licenses/by-nc-sa/4.0/"
 LIBRE_PRO_DEVICE = "FreeStyle_Libre_Pro"
 DEXCOM_G6_PRO_DEVICE = "Dexcom_G6_Pro"
 LIBRE_SAMPLING_MIN = 15
@@ -121,47 +124,18 @@ def query_cgmacros_t2d_cohort(db: Session) -> list[Patient]:
     )
 
 
-def _detect_stream_grid_provenance(
-    sensor_timestamps: list[datetime],
-    native_interval_min: int,
-) -> ObservationProvenanceType:
-    """Determine default provenance for a sensor stream when rows lack explicit provenance labels.
-
-    Rule:
-    - In the published 1-minute aligned CGMacros CSVs, rows are spaced at 1-minute intervals
-      without an indicator column distinguishing original sensor captures from aligned/interpolated
-      points. Periodic row selection (every 5th or 15th row) CANNOT verify native provenance.
-    - Therefore, if any positive timestamp step in the stream is shorter than ``native_interval_min``
-      (e.g., 1-minute aligned steps), unlabelled rows in that stream default to ``'unknown'``.
-    - Only if the stream contains exclusively timestamps spaced at ``>= native_interval_min``
-      (unaligned raw device export) does it qualify as ``'native'``.
-    """
-    unique_ts = sorted(set(sensor_timestamps))
-    if len(unique_ts) < 2:
-        return "unknown"
-
-    deltas_min = [
-        (unique_ts[i + 1] - unique_ts[i]).total_seconds() / 60.0
-        for i in range(len(unique_ts) - 1)
-        if (unique_ts[i + 1] - unique_ts[i]).total_seconds() > 0
-    ]
-    if not deltas_min:
-        return "unknown"
-
-    # If the stream contains sub-interval steps (such as 1-minute aligned grid rows),
-    # native vs. interpolated status cannot be established without explicit row metadata.
-    if any(d < native_interval_min - 1e-6 for d in deltas_min):
-        return "unknown"
-
-    return "native"
-
-
 def _resolve_row_provenance(
     row: dict[str, Any],
     *,
     device_candidates: tuple[str, ...],
-    stream_default: ObservationProvenanceType,
+    source_verified_native_export: bool,
 ) -> ObservationProvenanceType:
+    """Resolve observation provenance strictly from verifiable source evidence.
+
+    Never classifies a reading as ``'native'`` merely because its timestamp spacing
+    matches the nominal sensor cadence (5 min or 15 min). Requires either an explicit
+    provenance field on the row or ``source_verified_native_export=True``.
+    """
     raw_prov = _extract_col(
         row,
         (*device_candidates, "observation_provenance", "provenance"),
@@ -170,23 +144,26 @@ def _resolve_row_provenance(
         cleaned = str(raw_prov).strip().lower()
         if cleaned in VALID_PROVENANCES:
             return cleaned  # type: ignore[return-value]
-    return stream_default
+    return "native" if source_verified_native_export else "unknown"
 
 
 def _resolve_checksums(
     bio_source: Path | pd.DataFrame | list[dict[str, Any]],
     participant_sources: dict[str, Path | pd.DataFrame | list[dict[str, Any]]],
     source_file_path: Path | str | None,
-) -> tuple[str | None, str]:
+) -> tuple[str | None, str | None, str]:
     file_checksum: str | None = None
+    dir_checksum: str | None = None
     if source_file_path is not None:
-        file_checksum = compute_source_file_checksum(source_file_path)
+        file_checksum, dir_checksum = resolve_source_checksums(source_file_path)
     elif isinstance(bio_source, (Path, str)) and Path(bio_source).exists():
         all_paths = [
-            v for v in participant_sources.values() if isinstance(v, (Path, str)) and Path(v).exists()
+            Path(v)
+            for v in participant_sources.values()
+            if isinstance(v, (Path, str)) and Path(v).exists()
         ]
         if len(all_paths) == len(participant_sources):
-            file_checksum = compute_source_file_checksum(Path(bio_source).parent)
+            file_checksum, dir_checksum = resolve_source_checksums(Path(bio_source).parent)
 
     canonical_payload = {
         "dataset_name": DATASET_NAME,
@@ -197,7 +174,7 @@ def _resolve_checksums(
         },
     }
     payload_checksum = compute_input_payload_checksum(canonical_payload)
-    return file_checksum, payload_checksum
+    return file_checksum, dir_checksum, payload_checksum
 
 
 def ingest_cgmacros(
@@ -208,31 +185,40 @@ def ingest_cgmacros(
     source_file_path: Path | str | None = None,
     t2d_only: bool = True,
     dataset_version: str = DEFAULT_DATASET_VERSION,
+    dataset_doi: str = DEFAULT_DATASET_DOI,
+    source_url: str = DEFAULT_SOURCE_URL,
     preprocessing_version: str = PREPROCESSING_VERSION,
+    source_verified_native_export: bool = False,
+    participant_consent_version: str | None = None,
 ) -> IngestionSummary:
-    """Ingest CGMacros dataset with CC BY-NC-SA 4.0 licensing, date_shifted_relative semantics,
-    and strict observation provenance tracking.
+    """Ingest CGMacros dataset with DOI 10.13026/3z8q-x658, CC BY-NC-SA 4.0 licensing,
+    date_shifted_relative semantics, and strict observation provenance tracking.
 
     Non-negotiable rules enforced:
-    - License recorded as ``CC BY-NC-SA 4.0`` (non-commercial restriction documented).
+    - Official PhysioNet v1.0.0 DOI ``10.13026/3z8q-x658`` and license ``CC BY-NC-SA 4.0``
+      recorded on ``DatasetImport`` — never stored in ``Patient.consent_version``.
     - Classifies participants via ``bio.csv`` HbA1c (``A1c PDL (Lab) > 6.4%`` => ``T2D``).
     - When ``t2d_only=True`` (default), excludes ``prediabetes`` and ``healthy`` cohorts.
     - Preserves supplied timestamps in ``raw_timestamp`` and marks
-      ``timestamp_semantics = 'date_shifted_relative'`` without inferring a real-world timezone.
-    - Does NOT assume that selecting every 5th or 15th row from a 1-minute aligned CSV recovers
-      native measurements. Marks unverified 1-minute aligned rows as ``observation_provenance='unknown'``
-      while preserving explicit ``native``/``interpolated``/``derived`` provenance when supplied.
+      ``timestamp_semantics = 'date_shifted_relative'`` and ``timezone_basis = 'not_applicable_relative'``
+      without inferring a real-world timezone.
+    - Does NOT classify a reading as ``native`` merely because its interval matches nominal sensor
+      cadence (5 min or 15 min). Regularly spaced but unverified readings remain ``unknown``.
     """
     tracker = RejectionTracker()
-    source_file_checksum, input_payload_checksum = _resolve_checksums(
+    source_file_checksum, directory_manifest_checksum, input_payload_checksum = _resolve_checksums(
         bio_source, participant_sources, source_file_path
     )
 
     dataset_import = DatasetImport(
         dataset_name=DATASET_NAME,
         dataset_version=dataset_version,
+        dataset_doi=dataset_doi,
+        source_url=source_url,
         license_identifier=LICENSE_IDENTIFIER,
+        license_url=LICENSE_URL,
         source_file_checksum=source_file_checksum,
+        directory_manifest_checksum=directory_manifest_checksum,
         input_payload_checksum=input_payload_checksum,
         preprocessing_version=preprocessing_version,
         status="running",
@@ -336,8 +322,8 @@ def ingest_cgmacros(
                 diabetes_type=diabetes_type,
                 height_cm=height_cm,
                 weight_kg=weight_kg,
-                consent_granted=True,
-                consent_version="physionet-cc-by-nc-sa-4.0-v1.0.0",
+                consent_granted=bool(participant_consent_version),
+                consent_version=participant_consent_version,
                 retention_policy="dataset_license_bound",
                 source_dataset=DATASET_NAME,
             )
@@ -346,18 +332,18 @@ def ingest_cgmacros(
         participants_ingested += 1
 
         raw_rows = _load_tabular(ts_source)
-        parsed_rows: list[tuple[int, datetime, str, dict[str, Any]]] = []
+        parsed_rows: list[tuple[int, datetime, str, str, dict[str, Any]]] = []
         for idx, row in enumerate(raw_rows):
             rec_id = f"{ext_id}:row_{idx}"
             raw_ts = _extract_col(row, ("timestamp", "date", "recorded_at", "time"))
             try:
-                ts_utc, raw_ts_str, _ = parse_timestamp_with_semantics(
+                ts_utc, raw_ts_str, _, tz_basis = parse_timestamp_with_semantics(
                     raw_ts, semantics="date_shifted_relative"
                 )
             except ValueError as err:
                 tracker.reject(source_record_id=rec_id, reason=str(err), raw_payload=row)
                 continue
-            parsed_rows.append((idx, ts_utc, raw_ts_str, row))
+            parsed_rows.append((idx, ts_utc, raw_ts_str, tz_basis, row))
 
         parsed_rows.sort(key=lambda item: (item[1], item[0]))
 
@@ -380,20 +366,6 @@ def ingest_cgmacros(
             )
             tracker.accept()
 
-        # Inspect stream-level timestamp cadence for Libre GL and Dexcom GL
-        libre_ts_list = [
-            ts_utc
-            for _, ts_utc, _, row in parsed_rows
-            if not is_missing_value(_extract_col(row, ("libre gl", "libre_gl", "freestyle_libre")))
-        ]
-        dexcom_ts_list = [
-            ts_utc
-            for _, ts_utc, _, row in parsed_rows
-            if not is_missing_value(_extract_col(row, ("dexcom gl", "dexcom_gl", "dexcom")))
-        ]
-        libre_stream_default = _detect_stream_grid_provenance(libre_ts_list, LIBRE_SAMPLING_MIN)
-        dexcom_stream_default = _detect_stream_grid_provenance(dexcom_ts_list, DEXCOM_SAMPLING_MIN)
-
         existing_glucose_keys: set[tuple[datetime, str, str]] = set(
             (r_ts, r_type, r_dev or "__none__")
             for r_ts, r_type, r_dev in db.execute(
@@ -405,12 +377,12 @@ def ingest_cgmacros(
             ).all()
         )
 
-        for idx, ts_utc, raw_ts_str, row in parsed_rows:
+        for idx, ts_utc, raw_ts_str, tz_basis, row in parsed_rows:
             rec_id = f"{ext_id}:row_{idx}"
             raw_unit_col = _extract_col(row, ("unit", "raw_unit"))
             unit_str = str(raw_unit_col).strip() if not is_missing_value(raw_unit_col) else "mg/dL"
 
-            # 1. Libre GL (FreeStyle Libre Pro, native 15-min sensor)
+            # 1. Libre GL (FreeStyle Libre Pro, nominal 15-min sensor)
             libre_raw = _extract_col(row, ("libre gl", "libre_gl", "freestyle_libre"))
             if not is_missing_value(libre_raw):
                 try:
@@ -427,7 +399,7 @@ def ingest_cgmacros(
                         prov = _resolve_row_provenance(
                             row,
                             device_candidates=("libre provenance", "libre_provenance"),
-                            stream_default=libre_stream_default,
+                            source_verified_native_export=source_verified_native_export,
                         )
                         provenance_counts[prov] = provenance_counts.get(prov, 0) + 1
                         db.add(
@@ -438,6 +410,7 @@ def ingest_cgmacros(
                                 recorded_at=ts_utc,
                                 raw_timestamp=raw_ts_str,
                                 timestamp_semantics="date_shifted_relative",
+                                timezone_basis=tz_basis,
                                 glucose_mg_dl=g_mg_dl,
                                 raw_value=g_raw,
                                 raw_unit=g_unit,
@@ -457,7 +430,7 @@ def ingest_cgmacros(
                         raw_payload=row,
                     )
 
-            # 2. Dexcom GL (Dexcom G6 Pro, native 5-min sensor)
+            # 2. Dexcom GL (Dexcom G6 Pro, nominal 5-min sensor)
             dexcom_raw = _extract_col(row, ("dexcom gl", "dexcom_gl", "dexcom"))
             if not is_missing_value(dexcom_raw):
                 try:
@@ -474,7 +447,7 @@ def ingest_cgmacros(
                         prov = _resolve_row_provenance(
                             row,
                             device_candidates=("dexcom provenance", "dexcom_provenance"),
-                            stream_default=dexcom_stream_default,
+                            source_verified_native_export=source_verified_native_export,
                         )
                         provenance_counts[prov] = provenance_counts.get(prov, 0) + 1
                         db.add(
@@ -485,6 +458,7 @@ def ingest_cgmacros(
                                 recorded_at=ts_utc,
                                 raw_timestamp=raw_ts_str,
                                 timestamp_semantics="date_shifted_relative",
+                                timezone_basis=tz_basis,
                                 glucose_mg_dl=g_mg_dl,
                                 raw_value=g_raw,
                                 raw_unit=g_unit,
@@ -531,6 +505,7 @@ def ingest_cgmacros(
                         logged_at=ts_utc,
                         raw_timestamp=raw_ts_str,
                         timestamp_semantics="date_shifted_relative",
+                        timezone_basis=tz_basis,
                         meal_type=m_type,
                         description=f"CGMacros {m_type} log",
                         ingredients=[],
@@ -578,8 +553,12 @@ def ingest_cgmacros(
             "participants_ingested": participants_ingested,
             "excluded_non_t2d_participants": excluded_non_t2d,
             "t2d_only": t2d_only,
+            "dataset_doi": dataset_doi,
+            "source_url": source_url,
             "license_identifier": LICENSE_IDENTIFIER,
+            "license_url": LICENSE_URL,
             "timestamp_semantics": "date_shifted_relative",
+            "timezone_basis": "not_applicable_relative",
             "observation_provenance_counts": provenance_counts,
         }
     )
@@ -589,9 +568,13 @@ def ingest_cgmacros(
         dataset_import_id=str(dataset_import.id),
         dataset_name=DATASET_NAME,
         dataset_version=dataset_version,
+        dataset_doi=dataset_doi,
+        source_url=source_url,
         license_identifier=LICENSE_IDENTIFIER,
+        license_url=LICENSE_URL,
         preprocessing_version=preprocessing_version,
         source_file_checksum=source_file_checksum,
+        directory_manifest_checksum=directory_manifest_checksum,
         input_payload_checksum=input_payload_checksum,
         records_accepted=tracker.accepted_count,
         records_rejected=tracker.rejected_count,
@@ -601,4 +584,5 @@ def ingest_cgmacros(
         excluded_non_t2d_participants=excluded_non_t2d,
         observation_provenance_counts=provenance_counts,
         timestamp_semantics="date_shifted_relative",
+        timezone_basis="not_applicable_relative",
     )

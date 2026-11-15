@@ -65,6 +65,9 @@ class GlucoseReading(Base):
     timestamp_semantics: Mapped[str] = mapped_column(
         String(32), nullable=False, default="utc_exact", server_default=text("'utc_exact'")
     )
+    timezone_basis: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="source_confirmed", server_default=text("'source_confirmed'")
+    )
     glucose_mg_dl: Mapped[float] = mapped_column(Float, nullable=False)
     raw_value: Mapped[float] = mapped_column(Float, nullable=False)
     raw_unit: Mapped[str] = mapped_column(String(16), nullable=False, default="mg/dL")
@@ -93,6 +96,10 @@ class GlucoseReading(Base):
         CheckConstraint(
             "timestamp_semantics IN ('utc_exact', 'real_world_local', 'date_shifted_relative')",
             name="ck_glucose_timestamp_semantics",
+        ),
+        CheckConstraint(
+            "timezone_basis IN ('source_confirmed', 'assumed_study_location', 'unknown', 'not_applicable_relative')",
+            name="ck_glucose_timezone_basis",
         ),
         CheckConstraint(
             "observation_provenance IN ('native', 'interpolated', 'derived', 'unknown')",
@@ -130,6 +137,9 @@ class Meal(Base):
     raw_timestamp: Mapped[str | None] = mapped_column(String(64), nullable=True)
     timestamp_semantics: Mapped[str] = mapped_column(
         String(32), nullable=False, default="utc_exact", server_default=text("'utc_exact'")
+    )
+    timezone_basis: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="source_confirmed", server_default=text("'source_confirmed'")
     )
     meal_type: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
     description: Mapped[str] = mapped_column(Text, nullable=False)
@@ -210,6 +220,8 @@ class MedicationEvent(Base):
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     event_source: Mapped[str] = mapped_column(String(32), nullable=False, default="patient_log")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_sheet: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_cell_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     source_dataset: Mapped[str] = mapped_column(String(64), nullable=False, default="app_user")
     source_record_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)

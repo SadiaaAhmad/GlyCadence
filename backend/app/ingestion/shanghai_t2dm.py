@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -8,14 +8,14 @@ from sqlalchemy.orm import Session
 
 from app.ingestion.common import (
     PREPROCESSING_VERSION,
-    SHANGHAI_TZ,
     IngestionSummary,
+    ObservationProvenanceType,
     RejectionTracker,
     compute_input_payload_checksum,
-    compute_source_file_checksum,
     is_missing_value,
     normalize_glucose_reading,
     parse_timestamp_with_semantics,
+    resolve_source_checksums,
 )
 from app.models import (
     ClinicalRecord,
@@ -28,10 +28,15 @@ from app.models import (
 )
 
 DATASET_NAME = "shanghai_t2dm"
-DEFAULT_DATASET_VERSION = "figshare-c6310860-item20444397-v1-2023"
+DEFAULT_DATASET_VERSION = "figshare-item-20444397-v1"
+DEFAULT_DATASET_DOI = "10.6084/m9.figshare.20444397.v1"
+DEFAULT_COLLECTION_DOI = "10.6084/m9.figshare.c.6310860.v1"
+DEFAULT_SOURCE_URL = "https://ndownloader.figshare.com/files/36582306"
 LICENSE_IDENTIFIER = "CC BY 4.0"
+LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
 FREESTYLE_LIBRE_H_DEVICE = "FreeStyle_Libre_H"
 SHANGHAI_CGM_INTERVAL_MIN = 15
+VALID_PROVENANCES: set[str] = {"native", "interpolated", "derived", "unknown"}
 
 
 def _load_tabular(source: Path | pd.DataFrame | list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -73,22 +78,25 @@ def _resolve_checksums(
     participant_sources: dict[str, Path | pd.DataFrame | list[dict[str, Any]]],
     summary_source: Path | pd.DataFrame | list[dict[str, Any]] | None,
     source_file_path: Path | str | None,
-) -> tuple[str | None, str]:
-    """Compute source_file_checksum (only for real on-disk files) and input_payload_checksum."""
+) -> tuple[str | None, str | None, str]:
+    """Compute (source_file_checksum, directory_manifest_checksum, input_payload_checksum)."""
     file_checksum: str | None = None
+    dir_checksum: str | None = None
     if source_file_path is not None:
-        file_checksum = compute_source_file_checksum(source_file_path)
+        file_checksum, dir_checksum = resolve_source_checksums(source_file_path)
     else:
         all_paths = [
-            v for v in participant_sources.values() if isinstance(v, (Path, str)) and Path(v).exists()
+            Path(v)
+            for v in participant_sources.values()
+            if isinstance(v, (Path, str)) and Path(v).exists()
         ]
         if len(all_paths) == len(participant_sources) and len(all_paths) > 0:
-            if len(all_paths) == 1:
-                file_checksum = compute_source_file_checksum(Path(all_paths[0]))
+            if len(all_paths) == 1 and all_paths[0].is_file():
+                file_checksum, dir_checksum = resolve_source_checksums(all_paths[0])
             else:
-                parent_dirs = {Path(p).parent for p in all_paths}
+                parent_dirs = {p.parent for p in all_paths}
                 if len(parent_dirs) == 1:
-                    file_checksum = compute_source_file_checksum(next(iter(parent_dirs)))
+                    file_checksum, dir_checksum = resolve_source_checksums(next(iter(parent_dirs)))
 
     canonical_payload = {
         "dataset_name": DATASET_NAME,
@@ -99,7 +107,20 @@ def _resolve_checksums(
         "summary": (_load_tabular(summary_source) if summary_source is not None else None),
     }
     payload_checksum = compute_input_payload_checksum(canonical_payload)
-    return file_checksum, payload_checksum
+    return file_checksum, dir_checksum, payload_checksum
+
+
+def _resolve_row_provenance(
+    row: dict[str, Any],
+    *,
+    source_verified_native_export: bool,
+) -> ObservationProvenanceType:
+    explicit = _extract_column(row, ("observation_provenance", "cgm_provenance", "provenance"))
+    if not is_missing_value(explicit):
+        cleaned = str(explicit).strip().lower()
+        if cleaned in VALID_PROVENANCES:
+            return cleaned  # type: ignore[return-value]
+    return "native" if source_verified_native_export else "unknown"
 
 
 def ingest_shanghai_t2dm(
@@ -109,32 +130,42 @@ def ingest_shanghai_t2dm(
     summary_source: Path | pd.DataFrame | list[dict[str, Any]] | None = None,
     source_file_path: Path | str | None = None,
     dataset_version: str = DEFAULT_DATASET_VERSION,
+    dataset_doi: str = DEFAULT_DATASET_DOI,
+    source_url: str = DEFAULT_SOURCE_URL,
     preprocessing_version: str = PREPROCESSING_VERSION,
-    default_tz: timezone = SHANGHAI_TZ,
+    assumed_iana_tz: str | None = "Asia/Shanghai",
+    source_verified_native_export: bool = True,
+    participant_consent_version: str | None = None,
 ) -> IngestionSummary:
     """Ingest ShanghaiT2DM research participant data with strict provenance & validation.
 
     Non-negotiable rules enforced:
     - Figshare item/version (``10.6084/m9.figshare.20444397.v1`` in collection ``6310860``)
-      and license ``CC BY 4.0`` recorded.
-    - ``source_file_checksum`` is set ONLY when an actual on-disk file/directory is supplied;
-      in-memory DataFrame/dict inputs record ``input_payload_checksum`` with ``source_file_checksum=None``.
-    - Preserves ``raw_timestamp``, ``timestamp_semantics='real_world_local'``, and
-      ``observation_provenance='native'`` for 15-min FreeStyle Libre H sensor captures.
+      and license ``CC BY 4.0`` recorded on ``DatasetImport`` — never stored in ``Patient.consent_version``.
+    - ``source_file_checksum`` is set ONLY when an actual single regular file is supplied;
+      directories use ``directory_manifest_checksum``; in-memory payloads use ``input_payload_checksum``.
+    - Naive Shanghai timestamps without an explicit offset are parsed via ``ZoneInfo('Asia/Shanghai')``
+      with ``timezone_basis='assumed_study_location'`` (or ``'source_confirmed'`` only when an explicit
+      offset is present in the source timestamp).
     - Medication provenance: summary-sheet medication fields create ``Medication`` regimens only
       (never ``MedicationEvent`` rows). Time-series rows create ``MedicationEvent(status='unknown')``
-      only for genuine timestamped notations and suppress consecutively copied/static text.
+      with ``source_sheet`` and ``source_cell_ref``, suppressing contiguous 15-min fill-down cells
+      while preserving genuine separate timestamped administrations.
     """
     tracker = RejectionTracker()
-    source_file_checksum, input_payload_checksum = _resolve_checksums(
+    source_file_checksum, directory_manifest_checksum, input_payload_checksum = _resolve_checksums(
         participant_sources, summary_source, source_file_path
     )
 
     dataset_import = DatasetImport(
         dataset_name=DATASET_NAME,
         dataset_version=dataset_version,
+        dataset_doi=dataset_doi,
+        source_url=source_url,
         license_identifier=LICENSE_IDENTIFIER,
+        license_url=LICENSE_URL,
         source_file_checksum=source_file_checksum,
+        directory_manifest_checksum=directory_manifest_checksum,
         input_payload_checksum=input_payload_checksum,
         preprocessing_version=preprocessing_version,
         status="running",
@@ -157,6 +188,7 @@ def ingest_shanghai_t2dm(
 
     participants_ingested = 0
     provenance_counts: dict[str, int] = {"native": 0, "interpolated": 0, "derived": 0, "unknown": 0}
+    observed_timezone_bases: set[str] = set()
 
     for ext_id, ts_source in participant_sources.items():
         clean_ext_id = str(ext_id).strip()
@@ -218,8 +250,8 @@ def ingest_shanghai_t2dm(
                 diabetes_type="T2D",
                 height_cm=height_cm,
                 weight_kg=weight_kg,
-                consent_granted=True,
-                consent_version="figshare-cc-by-4.0-v1",
+                consent_granted=bool(participant_consent_version),
+                consent_version=participant_consent_version,
                 retention_policy="dataset_license_bound",
                 source_dataset=DATASET_NAME,
             )
@@ -228,7 +260,6 @@ def ingest_shanghai_t2dm(
         participants_ingested += 1
 
         known_meds: dict[str, Medication] = {}
-        static_summary_med_strings: set[str] = set()
 
         # Static medication regimen descriptions in summary sheet create Medication rows ONLY (never MedicationEvents)
         for sum_med_cols, sum_drug_class in (
@@ -242,7 +273,6 @@ def ingest_shanghai_t2dm(
             if not is_missing_value(sum_med_raw):
                 sum_med_str = str(sum_med_raw).strip()
                 if sum_med_str.lower() not in {"none", "no", "0"}:
-                    static_summary_med_strings.add(sum_med_str)
                     if sum_med_str not in known_meds:
                         med_obj = Medication(
                             patient_id=patient.id,
@@ -261,18 +291,21 @@ def ingest_shanghai_t2dm(
                         tracker.accept()
 
         raw_rows = _load_tabular(ts_source)
-        parsed_rows: list[tuple[int, datetime, str, dict[str, Any]]] = []
+        parsed_rows: list[tuple[int, datetime, str, str, dict[str, Any]]] = []
         for idx, row in enumerate(raw_rows):
             rec_id = f"{clean_ext_id}:row_{idx}"
             raw_ts = _extract_column(row, ("date", "timestamp", "recorded_at", "time"))
             try:
-                ts_utc, raw_ts_str, _ = parse_timestamp_with_semantics(
-                    raw_ts, semantics="real_world_local", local_tz=default_tz
+                ts_utc, raw_ts_str, _, tz_basis = parse_timestamp_with_semantics(
+                    raw_ts,
+                    semantics="real_world_local",
+                    assumed_iana_tz=assumed_iana_tz,
                 )
             except ValueError as err:
                 tracker.reject(source_record_id=rec_id, reason=str(err), raw_payload=row)
                 continue
-            parsed_rows.append((idx, ts_utc, raw_ts_str, row))
+            observed_timezone_bases.add(tz_basis)
+            parsed_rows.append((idx, ts_utc, raw_ts_str, tz_basis, row))
 
         parsed_rows.sort(key=lambda item: (item[1], item[0]))
 
@@ -308,15 +341,18 @@ def ingest_shanghai_t2dm(
             ).all()
         )
 
-        # Detect if a medication column in the time-series file has identical static text copied across consecutive rows
-        prev_med_text_by_class: dict[str, str | None] = {}
+        # Track contiguous fill-down state per drug_class: (med_str, last_ts_utc, sheet_name)
+        last_contiguous_med_by_class: dict[str, tuple[str, datetime, str] | None] = {}
 
-        for idx, ts_utc, raw_ts_str, row in parsed_rows:
+        for idx, ts_utc, raw_ts_str, tz_basis, row in parsed_rows:
             rec_id = f"{clean_ext_id}:row_{idx}"
             raw_unit_col = _extract_column(row, ("unit", "raw_unit", "glucose_unit"))
             unit_str = str(raw_unit_col).strip() if not is_missing_value(raw_unit_col) else "mg/dL"
+            row_prov = _resolve_row_provenance(
+                row, source_verified_native_export=source_verified_native_export
+            )
 
-            # 1. CGM reading (FreeStyle Libre H, native 15-min sensor capture)
+            # 1. CGM reading (FreeStyle Libre H, 15-min sensor capture)
             cgm_raw = _extract_column(
                 row, ("cgm (mg / dl)", "cgm (mg/dl)", "cgm", "glucose_cgm", "cgm (mmol / l)")
             )
@@ -338,7 +374,7 @@ def ingest_shanghai_t2dm(
                         )
                     else:
                         existing_glucose_keys.add(g_key)
-                        provenance_counts["native"] += 1
+                        provenance_counts[row_prov] = provenance_counts.get(row_prov, 0) + 1
                         db.add(
                             GlucoseReading(
                                 patient_id=patient.id,
@@ -347,13 +383,14 @@ def ingest_shanghai_t2dm(
                                 recorded_at=ts_utc,
                                 raw_timestamp=raw_ts_str,
                                 timestamp_semantics="real_world_local",
+                                timezone_basis=tz_basis,
                                 glucose_mg_dl=g_mg_dl,
                                 raw_value=g_raw,
                                 raw_unit=g_unit,
                                 reading_type="cgm",
                                 device_id=FREESTYLE_LIBRE_H_DEVICE,
                                 sampling_interval_min=SHANGHAI_CGM_INTERVAL_MIN,
-                                observation_provenance="native",
+                                observation_provenance=row_prov,
                                 source_dataset=DATASET_NAME,
                                 source_record_id=f"{rec_id}:cgm",
                             )
@@ -380,7 +417,7 @@ def ingest_shanghai_t2dm(
                         )
                     else:
                         existing_glucose_keys.add(c_key)
-                        provenance_counts["native"] += 1
+                        provenance_counts[row_prov] = provenance_counts.get(row_prov, 0) + 1
                         db.add(
                             GlucoseReading(
                                 patient_id=patient.id,
@@ -389,13 +426,14 @@ def ingest_shanghai_t2dm(
                                 recorded_at=ts_utc,
                                 raw_timestamp=raw_ts_str,
                                 timestamp_semantics="real_world_local",
+                                timezone_basis=tz_basis,
                                 glucose_mg_dl=c_mg_dl,
                                 raw_value=c_raw,
                                 raw_unit=c_unit,
                                 reading_type="cbg",
                                 device_id=None,
                                 sampling_interval_min=None,
-                                observation_provenance="native",
+                                observation_provenance=row_prov,
                                 source_dataset=DATASET_NAME,
                                 source_record_id=f"{rec_id}:cbg",
                             )
@@ -426,6 +464,7 @@ def ingest_shanghai_t2dm(
                         logged_at=ts_utc,
                         raw_timestamp=raw_ts_str,
                         timestamp_semantics="real_world_local",
+                        timezone_basis=tz_basis,
                         meal_type="unknown",
                         description=str(diet_raw).strip(),
                         ingredients=[],
@@ -437,25 +476,32 @@ def ingest_shanghai_t2dm(
                 tracker.accept()
 
             # 4. Timestamped Medication notations -> Medication + MedicationEvent(status='unknown')
-            # Suppress consecutively copied static strings so repeated unknown events are never fabricated from copied text.
-            for med_col_candidates, drug_class in (
+            # Suppress ONLY contiguous 15-min spreadsheet fill-down cells (or explicit is_fill_down=True).
+            # Preserve genuine separate timestamped administrations (e.g., morning and evening doses).
+            sheet_raw = _extract_column(row, ("source_sheet", "sheet_name", "sheet"))
+            sheet_name = str(sheet_raw).strip()[:128] if not is_missing_value(sheet_raw) else f"{clean_ext_id}_Sheet1"
+            explicit_fill_down = row.get("is_fill_down")
+
+            for med_col_candidates, drug_class, default_col_letter in (
                 (
                     ("non-insulin hypoglycemic agents", "oral hypoglycemic agents"),
                     "non_insulin_hypoglycemic",
+                    "G",
                 ),
                 (
                     ("insulin dose - s.c.", "insulin dose - i.v.", "insulin dose"),
                     "insulin",
+                    "H",
                 ),
             ):
                 med_text = _extract_column(row, med_col_candidates)
                 if is_missing_value(med_text):
-                    prev_med_text_by_class[drug_class] = None
+                    last_contiguous_med_by_class[drug_class] = None
                     continue
 
                 med_str = str(med_text).strip()
                 if med_str.lower() in {"none", "no", "0"}:
-                    prev_med_text_by_class[drug_class] = None
+                    last_contiguous_med_by_class[drug_class] = None
                     continue
 
                 med_obj = known_meds.get(med_str)
@@ -475,12 +521,32 @@ def ingest_shanghai_t2dm(
                     db.flush()
                     known_meds[med_str] = med_obj
 
-                # If identical text was copied directly from the immediately preceding row,
-                # or is a pure static summary regimen string without timestamp-specific change,
-                # do not emit repeated unknown MedicationEvent rows.
-                if prev_med_text_by_class.get(drug_class) == med_str:
+                cell_ref_raw = _extract_column(row, ("source_cell_ref", "cell_ref", "cell"))
+                cell_ref = (
+                    str(cell_ref_raw).strip()[:64]
+                    if not is_missing_value(cell_ref_raw)
+                    else f"{default_col_letter}{idx + 2}"
+                )
+
+                prev_state = last_contiguous_med_by_class.get(drug_class)
+                is_contiguous_fill_down = False
+                if explicit_fill_down is True:
+                    is_contiguous_fill_down = True
+                elif explicit_fill_down is False:
+                    is_contiguous_fill_down = False
+                elif prev_state is not None:
+                    prev_med_str, prev_ts_utc, prev_sheet = prev_state
+                    elapsed = ts_utc - prev_ts_utc
+                    if (
+                        prev_med_str == med_str
+                        and prev_sheet == sheet_name
+                        and timedelta(0) <= elapsed <= timedelta(minutes=SHANGHAI_CGM_INTERVAL_MIN)
+                    ):
+                        is_contiguous_fill_down = True
+
+                last_contiguous_med_by_class[drug_class] = (med_str, ts_utc, sheet_name)
+                if is_contiguous_fill_down:
                     continue
-                prev_med_text_by_class[drug_class] = med_str
 
                 db.add(
                     MedicationEvent(
@@ -490,12 +556,20 @@ def ingest_shanghai_t2dm(
                         event_time=ts_utc,
                         status="unknown",
                         event_source="clinical_record",
+                        source_sheet=sheet_name,
+                        source_cell_ref=cell_ref,
                         notes=med_str,
                         source_dataset=DATASET_NAME,
-                        source_record_id=f"{rec_id}:med_event",
+                        source_record_id=f"{rec_id}:med_event:{drug_class}",
                     )
                 )
                 tracker.accept()
+
+    primary_tz_basis = (
+        sorted(observed_timezone_bases)[0]
+        if len(observed_timezone_bases) == 1
+        else ("assumed_study_location" if "assumed_study_location" in observed_timezone_bases else "source_confirmed")
+    )
 
     dataset_import.status = "completed"
     dataset_import.records_accepted = tracker.accepted_count
@@ -505,11 +579,15 @@ def ingest_shanghai_t2dm(
         extra={
             "participants_ingested": participants_ingested,
             "license_identifier": LICENSE_IDENTIFIER,
-            "figshare_collection_doi": "10.6084/m9.figshare.c.6310860.v1",
-            "figshare_item_doi": "10.6084/m9.figshare.20444397.v1",
+            "license_url": LICENSE_URL,
+            "figshare_collection_doi": DEFAULT_COLLECTION_DOI,
+            "figshare_item_doi": dataset_doi,
+            "source_url": source_url,
             "native_cgm_device": FREESTYLE_LIBRE_H_DEVICE,
             "native_sampling_interval_min": SHANGHAI_CGM_INTERVAL_MIN,
             "timestamp_semantics": "real_world_local",
+            "timezone_basis": sorted(observed_timezone_bases) or [primary_tz_basis],
+            "assumed_iana_timezone": assumed_iana_tz,
             "observation_provenance_counts": provenance_counts,
         }
     )
@@ -519,9 +597,13 @@ def ingest_shanghai_t2dm(
         dataset_import_id=str(dataset_import.id),
         dataset_name=DATASET_NAME,
         dataset_version=dataset_version,
+        dataset_doi=dataset_doi,
+        source_url=source_url,
         license_identifier=LICENSE_IDENTIFIER,
+        license_url=LICENSE_URL,
         preprocessing_version=preprocessing_version,
         source_file_checksum=source_file_checksum,
+        directory_manifest_checksum=directory_manifest_checksum,
         input_payload_checksum=input_payload_checksum,
         records_accepted=tracker.accepted_count,
         records_rejected=tracker.rejected_count,
@@ -530,4 +612,5 @@ def ingest_shanghai_t2dm(
         participants_ingested=participants_ingested,
         observation_provenance_counts=provenance_counts,
         timestamp_semantics="real_world_local",
+        timezone_basis=primary_tz_basis,
     )

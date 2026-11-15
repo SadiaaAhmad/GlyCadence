@@ -75,6 +75,7 @@ class CGMCoverageReport(BaseModel):
     unknown_observation_count: int = 0
     excluded_non_native_count: int = 0
     timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
+    timezone_basis: list[str] = Field(default_factory=lambda: ["source_confirmed"])
     calendar_date_comparable: bool = True
     engineering_threshold_pct: float = 70.0
     clinical_guidance_reference: str = (
@@ -96,6 +97,7 @@ class GlucoseSummaryOut(BaseModel):
     unknown_observation_count: int = 0
     excluded_non_native_count: int = 0
     timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
+    timezone_basis: list[str] = Field(default_factory=lambda: ["source_confirmed"])
     calendar_date_comparable: bool = True
     mean_glucose_mg_dl: float | None
     sd_glucose_mg_dl: float | None

@@ -30,6 +30,7 @@ class GlucosePoint:
     device_id: str | None = None
     observation_provenance: str = "native"
     timestamp_semantics: str = "utc_exact"
+    timezone_basis: str = "source_confirmed"
 
 
 def prepare_glucose_points(
@@ -50,6 +51,7 @@ def prepare_glucose_points(
                 device_id=item.device_id,
                 observation_provenance=item.observation_provenance or "native",
                 timestamp_semantics=item.timestamp_semantics or "utc_exact",
+                timezone_basis=item.timezone_basis or "source_confirmed",
             )
         elif isinstance(item, dict):
             pt = GlucosePoint(
@@ -61,6 +63,7 @@ def prepare_glucose_points(
                 device_id=item.get("device_id"),
                 observation_provenance=str(item.get("observation_provenance") or "native"),
                 timestamp_semantics=str(item.get("timestamp_semantics") or "utc_exact"),
+                timezone_basis=str(item.get("timezone_basis") or "source_confirmed"),
             )
         else:
             pt = GlucosePoint(
@@ -72,6 +75,7 @@ def prepare_glucose_points(
                 device_id=item.device_id,
                 observation_provenance=getattr(item, "observation_provenance", "native") or "native",
                 timestamp_semantics=getattr(item, "timestamp_semantics", "utc_exact") or "utc_exact",
+                timezone_basis=getattr(item, "timezone_basis", "source_confirmed") or "source_confirmed",
             )
 
         if math.isnan(pt.glucose_mg_dl) or math.isinf(pt.glucose_mg_dl) or pt.glucose_mg_dl <= 0:
@@ -138,6 +142,7 @@ def compute_glucose_summary(
         all_points = [p for p in all_points if p.recorded_at <= w_end_filter]
 
     sem_list = sorted({p.timestamp_semantics for p in all_points}) if all_points else ["utc_exact"]
+    tz_basis_list = sorted({p.timezone_basis for p in all_points}) if all_points else ["source_confirmed"]
     points, prov_counts, excluded_non_native = filter_and_count_provenance(
         all_points, native_only=native_only
     )
@@ -151,6 +156,7 @@ def compute_glucose_summary(
         provenance_counts=prov_counts,
         excluded_non_native_count=excluded_non_native,
         timestamp_semantics=sem_list,
+        timezone_basis=tz_basis_list,
     )
 
     n = len(points)
@@ -165,6 +171,7 @@ def compute_glucose_summary(
             unknown_observation_count=prov_counts["unknown"],
             excluded_non_native_count=excluded_non_native,
             timestamp_semantics=coverage.timestamp_semantics,
+            timezone_basis=coverage.timezone_basis,
             calendar_date_comparable=coverage.calendar_date_comparable,
             mean_glucose_mg_dl=None,
             sd_glucose_mg_dl=None,
@@ -274,6 +281,7 @@ def compute_glucose_summary(
         unknown_observation_count=prov_counts["unknown"],
         excluded_non_native_count=excluded_non_native,
         timestamp_semantics=coverage.timestamp_semantics,
+        timezone_basis=coverage.timezone_basis,
         calendar_date_comparable=coverage.calendar_date_comparable,
         mean_glucose_mg_dl=mean_rounded,
         sd_glucose_mg_dl=sd_rounded,

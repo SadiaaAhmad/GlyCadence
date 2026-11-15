@@ -1,12 +1,13 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+import math
 from pathlib import Path
 import tempfile
 import uuid
 
 from fastapi.testclient import TestClient
 import pytest
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.analytics import (
@@ -20,12 +21,14 @@ from app.core.database import get_engine
 from app.core.rate_limit import reset_rate_limiter
 from app.ingestion import (
     classify_cgmacros_glycemic_status,
+    compute_directory_manifest_checksum,
     compute_input_payload_checksum,
     compute_sha256,
     compute_source_file_checksum,
     ingest_cgmacros,
     ingest_shanghai_t2dm,
     normalize_glucose_reading,
+    parse_timestamp_with_semantics,
     query_cgmacros_t2d_cohort,
     seed_synthetic_demo_patient,
     validate_calendar_date_comparability,
@@ -67,6 +70,7 @@ def test_glucose_summary_matches_manual_reference_calculations():
             "sampling_interval_min": 15,
             "observation_provenance": "native",
             "timestamp_semantics": "real_world_local",
+            "timezone_basis": "assumed_study_location",
         }
         for i, val in enumerate(raw_values)
     ]
@@ -87,7 +91,10 @@ def test_glucose_summary_matches_manual_reference_calculations():
     assert summary.tar_pct == 40.0
     assert summary.tar_level2_pct == 20.0
     assert round(summary.tbr_pct + summary.tir_pct + summary.tar_pct, 2) == 100.0
+    assert summary.timezone_basis == ["assumed_study_location"]
+    assert any("assumed_study_location" in n for n in summary.coverage.uncertainty_notes)
     assert len(summary.evidence_items) == 3
+    assert any("assumed_study_location" in n for n in summary.evidence_items[0].uncertainty_notes)
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +221,6 @@ def test_native_vs_interpolated_derived_unknown_provenance_filtering():
     ]
 
     summary = compute_glucose_summary(mixed_readings, native_only=True)
-    # Only the 2 verified native readings (100.0 and 120.0 -> mean 110.0) may enter native-cadence analytics
     assert summary.observation_count == 2
     assert summary.mean_glucose_mg_dl == 110.0
     assert summary.native_observation_count == 2
@@ -226,7 +232,6 @@ def test_native_vs_interpolated_derived_unknown_provenance_filtering():
     assert any("Excluded 3 reading(s) with non-native provenance" in n for n in summary.coverage.uncertainty_notes)
     assert any("date_shifted_relative" in n for n in summary.coverage.uncertainty_notes)
 
-    # Calendar-date comparison guard must block date_shifted_relative
     with pytest.raises(ValueError, match="calendar_date_comparison_forbidden_for_date_shifted_relative"):
         validate_calendar_date_comparability(["date_shifted_relative", "real_world_local"], dataset_names=["cgmacros", "shanghai_t2dm"])
 
@@ -272,7 +277,7 @@ def test_missingness_daily_vs_period_coverage_and_duplicate_out_of_order_handlin
 
 
 # ---------------------------------------------------------------------------
-# 5. Checksum Semantics (source_file_checksum vs. input_payload_checksum) & Unit Tests
+# 5. Checksum Semantics (Regular File vs. Directory Manifest vs. Canonical Payload)
 # ---------------------------------------------------------------------------
 def test_unit_conversion_and_strict_checksum_semantics():
     g_mg_dl, g_raw, g_unit = normalize_glucose_reading(5.5, "mmol/L")
@@ -280,43 +285,108 @@ def test_unit_conversion_and_strict_checksum_semantics():
     assert g_raw == 5.5
     assert g_unit == "mmol/L"
 
-    # In-memory bytes/dicts must NEVER be accepted by compute_source_file_checksum
+    # A. Regular-file-only enforcement for compute_source_file_checksum
     assert compute_source_file_checksum(None) is None
-    with pytest.raises(ValueError, match="source_file_checksum requires an existing on-disk file"):
+    assert compute_directory_manifest_checksum(None) is None
+    with pytest.raises(ValueError, match="source_file_checksum requires an existing regular file"):
         compute_source_file_checksum(b"raw-bytes-not-a-file")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="does not exist on disk"):
         compute_source_file_checksum("non_existent_dataset_file.csv")
 
-    # Canonical input_payload_checksum is deterministic and order-independent for dict keys
-    p1 = compute_input_payload_checksum({"b": 2, "a": [1, 2, 3]})
-    p2 = compute_input_payload_checksum({"a": [1, 2, 3], "b": 2})
-    assert len(p1) == 64
-    assert p1 == p2
+    with tempfile.TemporaryDirectory() as tmp_dir_str:
+        tmp_dir = Path(tmp_dir_str)
+        file_a = tmp_dir / "part_a.csv"
+        file_b = tmp_dir / "part_b.csv"
+        file_a.write_bytes(b"Date,CGM (mg / dl)\n2023-01-01 08:00:00,120\n")
+        file_b.write_bytes(b"Date,CGM (mg / dl)\n2023-01-01 08:15:00,125\n")
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-        tmp.write(b"Date,CGM (mg / dl)\n2023-01-01 08:00:00,120\n")
-        tmp_path = Path(tmp.name)
-    try:
-        file_hash = compute_source_file_checksum(tmp_path)
-        assert file_hash is not None
-        assert len(file_hash) == 64
+        # Passing a directory to compute_source_file_checksum MUST raise ValueError
+        with pytest.raises(ValueError, match="requires a regular file, not a directory"):
+            compute_source_file_checksum(tmp_dir)
+
+        # Passing a regular file to compute_directory_manifest_checksum MUST raise ValueError
+        with pytest.raises(ValueError, match="requires a directory path, not a regular file"):
+            compute_directory_manifest_checksum(file_a)
+
+        file_hash = compute_source_file_checksum(file_a)
         assert file_hash == compute_sha256(b"Date,CGM (mg / dl)\n2023-01-01 08:00:00,120\n")
-    finally:
-        tmp_path.unlink(missing_ok=True)
+
+        dir_hash_1 = compute_directory_manifest_checksum(tmp_dir)
+        dir_hash_2 = compute_directory_manifest_checksum(tmp_dir)
+        assert dir_hash_1 is not None
+        assert len(dir_hash_1) == 64
+        assert dir_hash_1 == dir_hash_2
+        assert dir_hash_1 != file_hash
+
+    # B. Canonical input_payload_checksum: timestamps, nulls/NaN, floats, Unicode, nested dicts, and row-order sensitivity
+    ts_val = datetime(2026, 5, 1, 8, 30, tzinfo=timezone.utc)
+    d_val = date(2026, 5, 1)
+    payload_1 = {
+        "meta": {"z_key": "餐后血糖 / روٹی", "a_key": None, "nan_val": float("nan"), "neg_zero": -0.0},
+        "rows": [
+            {"ts": ts_val, "day": d_val, "glucose": 124.5, "note": "first"},
+            {"ts": ts_val + timedelta(minutes=15), "day": d_val, "glucose": 130.25, "note": "second"},
+        ],
+    }
+    payload_2_reordered_keys = {
+        "rows": [
+            {"note": "first", "glucose": 124.5, "day": d_val, "ts": ts_val},
+            {"glucose": 130.25, "ts": ts_val + timedelta(minutes=15), "note": "second", "day": d_val},
+        ],
+        "meta": {"a_key": None, "neg_zero": 0.0, "nan_val": None, "z_key": "餐后血糖 / روٹی"},
+    }
+    payload_3_reordered_rows = {
+        "meta": {"z_key": "餐后血糖 / روٹی", "a_key": None, "nan_val": None, "neg_zero": 0.0},
+        "rows": [
+            {"ts": ts_val + timedelta(minutes=15), "day": d_val, "glucose": 130.25, "note": "second"},
+            {"ts": ts_val, "day": d_val, "glucose": 124.5, "note": "first"},
+        ],
+    }
+    h1 = compute_input_payload_checksum(payload_1)
+    h2 = compute_input_payload_checksum(payload_2_reordered_keys)
+    h3 = compute_input_payload_checksum(payload_3_reordered_rows)
+    assert len(h1) == 64
+    assert h1 == h2  # Dict key ordering, -0.0 vs 0.0, and NaN->None produce identical canonical hash
+    assert h1 != h3  # List / row ordering is semantically significant and changes the checksum
 
 
 # ---------------------------------------------------------------------------
-# 6. Dual-CGM Database Integrity, Provenance, Licensing & Medication Provenance
+# 6. Dual-CGM Database Integrity, DOI, Consent Separation, Provenance & Immutability
 # ---------------------------------------------------------------------------
-def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance():
+def test_shanghai_t2dm_cgmacros_provenance_consent_immutability_and_medication_dedup():
+    # Verify timezone basis helper for Shanghai naive vs offset-confirmed timestamps
+    ts_naive, raw_naive, sem_naive, basis_naive = parse_timestamp_with_semantics(
+        "2023-01-01 08:00:00",
+        semantics="real_world_local",
+        assumed_iana_tz="Asia/Shanghai",
+    )
+    assert ts_naive == datetime(2023, 1, 1, 0, 0, tzinfo=timezone.utc)
+    assert raw_naive == "2023-01-01 08:00:00"
+    assert sem_naive == "real_world_local"
+    assert basis_naive == "assumed_study_location"
+
+    ts_confirmed, _, _, basis_confirmed = parse_timestamp_with_semantics(
+        "2023-01-01 08:00:00+08:00",
+        semantics="real_world_local",
+        assumed_iana_tz="Asia/Shanghai",
+    )
+    assert ts_confirmed == datetime(2023, 1, 1, 0, 0, tzinfo=timezone.utc)
+    assert basis_confirmed == "source_confirmed"
+
     engine = get_engine()
     conn = engine.connect()
     outer_tx = conn.begin()
     db = Session(bind=conn, join_transaction_mode="create_savepoint")
     try:
         # A. ShanghaiT2DM Ingestion:
-        # Verify static summary medications create Medication regimens ONLY (zero MedicationEvents),
-        # and consecutively copied time-series medication strings do NOT create duplicate events.
+        # 1. Verify dataset license ('CC BY 4.0', DOI '10.6084/m9.figshare.20444397.v1') is stored on
+        #    DatasetImport while Patient.consent_version is None and Patient.consent_granted is False.
+        # 2. Verify naive Shanghai timestamps get timezone_basis == 'assumed_study_location'.
+        # 3. Verify medication deduplication:
+        #    - Static summary medication creates a Medication regimen only (0 MedicationEvents).
+        #    - Contiguous 15-min fill-down rows (08:15 and 08:30 'Metformin 0.5g') emit ONLY 1 event (at 08:15).
+        #    - A genuine separate timestamped administration later that day (20:00 'Metformin 0.5g')
+        #      is NOT suppressed and emits a 2nd MedicationEvent, preserving source_sheet & source_cell_ref.
         shanghai_summary = [
             {
                 "Patient Number": "9001_0_20230101",
@@ -340,12 +410,24 @@ def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance
                 "CGM (mg / dl)": 142.0,
                 "Dietary intake": "Steamed bun and soy milk",
                 "Non-insulin hypoglycemic agents": "Metformin 0.5g",
+                "source_sheet": "9001_0_20230101",
+                "source_cell_ref": "G3",
             },
-            # Consecutively copied identical medication string on next 15-min row -> must NOT emit 2nd event
+            # Contiguous 15-min fill-down cell (08:30 is 15 min after 08:15 on same sheet) -> suppressed
             {
                 "Date": "2023-01-01 08:30:00",
                 "CGM (mg / dl)": 148.0,
                 "Non-insulin hypoglycemic agents": "Metformin 0.5g",
+                "source_sheet": "9001_0_20230101",
+                "source_cell_ref": "G4",
+            },
+            # Genuine separate evening administration of the same dose at 20:00 -> MUST be preserved!
+            {
+                "Date": "2023-01-01 20:00:00",
+                "CGM (mg / dl)": 156.0,
+                "Non-insulin hypoglycemic agents": "Metformin 0.5g",
+                "source_sheet": "9001_0_20230101",
+                "source_cell_ref": "G50",
             },
             {
                 "Date": "2023-01-01 08:00:00",
@@ -378,11 +460,16 @@ def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance
         )
 
         assert st_report.license_identifier == "CC BY 4.0"
-        assert st_report.source_file_checksum is None  # In-memory dict input, never mislabeled as file checksum
+        assert st_report.dataset_doi == "10.6084/m9.figshare.20444397.v1"
+        assert st_report.source_url == "https://ndownloader.figshare.com/files/36582306"
+        assert st_report.license_url == "https://creativecommons.org/licenses/by/4.0/"
+        assert st_report.timezone_basis == "assumed_study_location"
+        assert st_report.source_file_checksum is None
+        assert st_report.directory_manifest_checksum is None
         assert st_report.input_payload_checksum is not None
         assert len(st_report.input_payload_checksum) == 64
         assert st_report.participants_ingested == 1
-        assert st_report.observation_provenance_counts["native"] == 4  # 3 CGM + 1 CBG
+        assert st_report.observation_provenance_counts["native"] == 5  # 4 CGM + 1 CBG
         assert st_report.rejection_reasons.get("t1d_cohort_mixing_forbidden") == 1
         assert st_report.rejection_reasons.get("duplicate_timestamp") == 1
 
@@ -393,39 +480,64 @@ def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance
             )
         )
         assert st_patient is not None
-        assert st_patient.consent_version == "figshare-cc-by-4.0-v1"
+        # Dataset license must NOT populate patient consent fields
+        assert st_patient.consent_granted is False
+        assert st_patient.consent_version is None
 
-        # 2 Medication regimens (1 from summary, 1 from time-series), but ONLY 1 MedicationEvent
+        # Verify timezone_basis on stored ShanghaiT2DM GlucoseReadings
+        st_readings = list(
+            db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == st_patient.id)).all()
+        )
+        assert all(r.timezone_basis == "assumed_study_location" for r in st_readings)
+        st_summary = compute_glucose_summary(st_readings, native_only=True)
+        assert st_summary.timezone_basis == ["assumed_study_location"]
+        assert any("assumed_study_location" in n for n in st_summary.coverage.uncertainty_notes)
+
+        # Verify medication regimens and deduplicated vs genuine separate timestamped MedicationEvents
         st_meds = list(db.scalars(select(Medication).where(Medication.patient_id == st_patient.id)).all())
         st_med_events = list(
-            db.scalars(select(MedicationEvent).where(MedicationEvent.patient_id == st_patient.id)).all()
+            db.scalars(
+                select(MedicationEvent)
+                .where(MedicationEvent.patient_id == st_patient.id)
+                .order_by(MedicationEvent.event_time.asc())
+            ).all()
         )
-        assert len(st_meds) == 2
-        assert len(st_med_events) == 1
+        assert len(st_meds) == 2  # 1 summary Acarbose + 1 time-series Metformin
+        assert len(st_med_events) == 2  # 08:15 event + 20:00 event (08:30 contiguous fill-down suppressed!)
         assert st_med_events[0].status == "unknown"
         assert st_med_events[0].notes == "Metformin 0.5g"
+        assert st_med_events[0].source_sheet == "9001_0_20230101"
+        assert st_med_events[0].source_cell_ref == "G3"
+        assert st_med_events[0].event_time == datetime(2023, 1, 1, 0, 15, tzinfo=timezone.utc)
+        assert st_med_events[1].status == "unknown"
+        assert st_med_events[1].notes == "Metformin 0.5g"
+        assert st_med_events[1].source_sheet == "9001_0_20230101"
+        assert st_med_events[1].source_cell_ref == "G50"
+        assert st_med_events[1].event_time == datetime(2023, 1, 1, 12, 0, tzinfo=timezone.utc)
 
         # B. CGMacros Ingestion:
-        # 1. Verify CC BY-NC-SA 4.0 license and date_shifted_relative semantics
-        # 2. Verify 1-minute aligned rows without provenance labels are marked 'unknown' (not assumed native!)
-        # 3. Verify simultaneous Libre Pro & Dexcom G6 Pro readings at identical timestamp coexist in PostgreSQL
+        # 1. Verify official PhysioNet v1.0.0 DOI '10.13026/3z8q-x658' and license 'CC BY-NC-SA 4.0'.
+        # 2. Verify Patient.consent_version is None and Patient.consent_granted is False.
+        # 3. Verify that EVEN WHEN rows are spaced at exact 15-minute intervals (nominal Libre cadence),
+        #    unverified CGMacros rows remain observation_provenance == 'unknown' and are excluded when native_only=True.
         cg_bio = [
             {"subject": 1, "Age": 58, "Gender": "M", "A1c PDL (Lab)": 7.2, "BMI": 29.1, "Fasting GLU - PDL (Lab)": 145.0},
             {"subject": 2, "Age": 45, "Gender": "F", "A1c PDL (Lab)": 6.0, "BMI": 26.0},
             {"subject": 3, "Age": 31, "Gender": "F", "A1c PDL (Lab)": 5.3, "BMI": 22.4},
         ]
         base_cg_ts = datetime(2023, 5, 10, 12, 0, tzinfo=timezone.utc)
-        # 1-minute aligned rows (minutes 0..15) with NO provenance column -> must be marked 'unknown'
+        # Rows spaced at exact 15-minute intervals (0, 15, 30, 45 min) WITHOUT explicit provenance metadata:
+        # Must still be classified as 'unknown' (interval spacing alone never establishes native provenance!).
         cg_rows_sub1 = [
             {
-                "Timestamp": (base_cg_ts + timedelta(minutes=m)).strftime("%Y-%m-%d %H:%M:%S"),
-                "Libre GL": 130.0 + m,
-                "Dexcom GL": 128.0 + m,
-                "Meal Type": "Lunch" if m == 0 else None,
-                "Calories": 520.0 if m == 0 else None,
-                "Carbs": 62.0 if m == 0 else None,
+                "Timestamp": (base_cg_ts + timedelta(minutes=15 * step)).strftime("%Y-%m-%d %H:%M:%S"),
+                "Libre GL": 130.0 + step,
+                "Dexcom GL": 128.0 + step,
+                "Meal Type": "Lunch" if step == 0 else None,
+                "Calories": 520.0 if step == 0 else None,
+                "Carbs": 62.0 if step == 0 else None,
             }
-            for m in range(16)
+            for step in range(4)
         ]
 
         cg_report = ingest_cgmacros(
@@ -435,18 +547,23 @@ def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance
             t2d_only=True,
         )
 
+        assert cg_report.dataset_doi == "10.13026/3z8q-x658"
+        assert cg_report.source_url == "https://physionet.org/content/cgmacros/1.0.0/"
         assert cg_report.license_identifier == "CC BY-NC-SA 4.0"
+        assert cg_report.license_url == "https://creativecommons.org/licenses/by-nc-sa/4.0/"
         assert cg_report.timestamp_semantics == "date_shifted_relative"
+        assert cg_report.timezone_basis == "not_applicable_relative"
         assert cg_report.source_file_checksum is None
         assert cg_report.input_payload_checksum is not None
         assert cg_report.participants_ingested == 1
         assert set(cg_report.excluded_non_t2d_participants) == {"CGMacros-002", "CGMacros-003"}
-        # All 16 Libre + 16 Dexcom 1-minute aligned rows without provenance metadata must be 'unknown'
-        assert cg_report.observation_provenance_counts["unknown"] == 32
+        # All 4 Libre + 4 Dexcom 15-min spaced rows without provenance verification must remain 'unknown'
+        assert cg_report.observation_provenance_counts["unknown"] == 8
         assert cg_report.observation_provenance_counts["native"] == 0
 
         cg_p1 = query_cgmacros_t2d_cohort(db)[0]
-        assert cg_p1.consent_version == "physionet-cc-by-nc-sa-4.0-v1.0.0"
+        assert cg_p1.consent_granted is False
+        assert cg_p1.consent_version is None
 
         # Verify simultaneous Libre Pro & Dexcom G6 Pro readings exist at the exact same timestamp t=0
         same_ts_readings = list(
@@ -461,6 +578,7 @@ def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance
         assert len(same_ts_readings) == 2
         assert {r.device_id for r in same_ts_readings} == {"FreeStyle_Libre_Pro", "Dexcom_G6_Pro"}
         assert all(r.timestamp_semantics == "date_shifted_relative" for r in same_ts_readings)
+        assert all(r.timezone_basis == "not_applicable_relative" for r in same_ts_readings)
         assert all(r.raw_timestamp == "2023-05-10 12:00:00" for r in same_ts_readings)
         assert all(r.observation_provenance == "unknown" for r in same_ts_readings)
 
@@ -474,6 +592,7 @@ def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance
                     recorded_at=base_cg_ts,
                     raw_timestamp="2023-05-10 12:00:00",
                     timestamp_semantics="date_shifted_relative",
+                    timezone_basis="not_applicable_relative",
                     glucose_mg_dl=199.0,
                     raw_value=199.0,
                     raw_unit="mg/dL",
@@ -489,15 +608,33 @@ def test_shanghai_t2dm_cgmacros_dual_cgm_db_constraint_and_medication_provenance
         finally:
             sp.rollback()
 
-        # Verify that native-cadence analytics excludes the 32 'unknown' 1-minute aligned rows
+        # Verify that native-cadence analytics excludes the 15-min spaced 'unknown' CGMacros rows when native_only=True
         all_cg_readings = list(
             db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == cg_p1.id)).all()
         )
         cg_summary = compute_glucose_summary(all_cg_readings, native_only=True)
         assert cg_summary.observation_count == 0
-        assert cg_summary.unknown_observation_count == 16  # 16 unique timestamps after cross-device dedup
-        assert cg_summary.excluded_non_native_count == 16
+        assert cg_summary.unknown_observation_count == 4
+        assert cg_summary.excluded_non_native_count == 4
         assert cg_summary.calendar_date_comparable is False
+
+        # C. Verify PostgreSQL trigger protects completed DatasetImport provenance from UPDATE and DELETE
+        completed_import_id = cg_report.dataset_import_id
+        for mut_sql in (
+            "UPDATE dataset_imports SET input_payload_checksum = '0000000000000000000000000000000000000000000000000000000000000000' WHERE id = :id",
+            "UPDATE dataset_imports SET license_identifier = 'MIT' WHERE id = :id",
+            "UPDATE dataset_imports SET dataset_doi = '10.13026/tampered' WHERE id = :id",
+            "UPDATE dataset_imports SET dataset_version = 'tampered-v2' WHERE id = :id",
+            "UPDATE dataset_imports SET preprocessing_version = 'tampered-v9' WHERE id = :id",
+            "DELETE FROM dataset_imports WHERE id = :id",
+        ):
+            sp_mut = db.begin_nested()
+            try:
+                with pytest.raises(DBAPIError, match="immutable"):
+                    db.execute(text(mut_sql), {"id": completed_import_id})
+                    db.flush()
+            finally:
+                sp_mut.rollback()
     finally:
         db.close()
         outer_tx.rollback()

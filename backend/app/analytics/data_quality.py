@@ -11,6 +11,10 @@ DATE_SHIFTED_LIMITATION_NOTE = (
     "Timestamps use date_shifted_relative semantics (randomly shifted study dates without real-world timezone); "
     "valid only for within-participant elapsed-time analysis and must not be aligned by calendar date across participants or datasets."
 )
+ASSUMED_TIMEZONE_LIMITATION_NOTE = (
+    "Timestamps include assumed_study_location/unknown timezone basis (e.g., Asia/Shanghai assumed from study location "
+    "because raw spreadsheet timestamps lack explicit UTC offsets)."
+)
 
 
 def ensure_utc_dt(dt: datetime) -> datetime:
@@ -57,6 +61,7 @@ def compute_cgm_coverage(
     provenance_counts: dict[str, int] | None = None,
     excluded_non_native_count: int = 0,
     timestamp_semantics: Sequence[str] | None = None,
+    timezone_basis: Sequence[str] | None = None,
 ) -> CGMCoverageReport:
     """Compute monitoring-period coverage and daily coverage with explicit thresholds and provenance."""
     unique_sorted = sorted(set(ensure_utc_dt(t) for t in timestamps))
@@ -72,11 +77,14 @@ def compute_cgm_coverage(
         "unknown": 0,
     }
     sem_list = sorted(set(timestamp_semantics)) if timestamp_semantics else ["utc_exact"]
+    tz_basis_list = sorted(set(timezone_basis)) if timezone_basis else ["source_confirmed"]
     cal_comparable = "date_shifted_relative" not in sem_list
 
     extra_notes: list[str] = []
     if not cal_comparable:
         extra_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
+    if "assumed_study_location" in tz_basis_list or "unknown" in tz_basis_list:
+        extra_notes.append(ASSUMED_TIMEZONE_LIMITATION_NOTE)
     if excluded_non_native_count > 0:
         extra_notes.append(
             f"Excluded {excluded_non_native_count} reading(s) with non-native provenance "
@@ -107,6 +115,7 @@ def compute_cgm_coverage(
             unknown_observation_count=p_counts.get("unknown", 0),
             excluded_non_native_count=excluded_non_native_count,
             timestamp_semantics=sem_list,
+            timezone_basis=tz_basis_list,
             calendar_date_comparable=cal_comparable,
             engineering_threshold_pct=engineering_threshold_pct,
             meets_14d_clinical_guidance=False,
@@ -224,6 +233,7 @@ def compute_cgm_coverage(
         unknown_observation_count=p_counts.get("unknown", 0),
         excluded_non_native_count=excluded_non_native_count,
         timestamp_semantics=sem_list,
+        timezone_basis=tz_basis_list,
         calendar_date_comparable=cal_comparable,
         engineering_threshold_pct=engineering_threshold_pct,
         meets_14d_clinical_guidance=meets_14d,
