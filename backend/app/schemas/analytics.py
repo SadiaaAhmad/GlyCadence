@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CALCULATION_VERSION = "v1.0.0"
+CALCULATION_VERSION = "v1.1.0"
 
 
 class SourceRecordRef(BaseModel):
@@ -69,6 +69,13 @@ class CGMCoverageReport(BaseModel):
     full_days_count: int
     large_gaps_count: int
     max_gap_minutes: float
+    native_observation_count: int = 0
+    interpolated_observation_count: int = 0
+    derived_observation_count: int = 0
+    unknown_observation_count: int = 0
+    excluded_non_native_count: int = 0
+    timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
+    calendar_date_comparable: bool = True
     engineering_threshold_pct: float = 70.0
     clinical_guidance_reference: str = (
         "International CGM consensus typically recommends >=70% sensor wear over a 14-day window."
@@ -83,6 +90,13 @@ class GlucoseSummaryOut(BaseModel):
     window_start: datetime
     window_end: datetime
     observation_count: int
+    native_observation_count: int = 0
+    interpolated_observation_count: int = 0
+    derived_observation_count: int = 0
+    unknown_observation_count: int = 0
+    excluded_non_native_count: int = 0
+    timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
+    calendar_date_comparable: bool = True
     mean_glucose_mg_dl: float | None
     sd_glucose_mg_dl: float | None
     cv_pct: float | None
@@ -104,11 +118,14 @@ class MealResponseItem(BaseModel):
     meal_type: str
     description: str
     carbs_g: float | None
+    timestamp_semantics: str = "utc_exact"
+    calendar_date_comparable: bool = True
     pre_meal_glucose_mg_dl: float | None
     pre_meal_recorded_at: datetime | None
     peak_post_meal_glucose_mg_dl: float | None
     excursion_delta_mg_dl: float | None
     post_meal_reading_count: int
+    excluded_non_native_count: int = 0
     post_meal_span_minutes: float
     max_consecutive_gap_minutes: float | None
     iauc_mg_dl_min: float | None
@@ -121,11 +138,24 @@ class MealResponseItem(BaseModel):
 class DriftSummaryOut(BaseModel):
     window_start: datetime
     window_end: datetime
+    analysis_type: Literal["exploratory_descriptive"] = "exploratory_descriptive"
+    is_exploratory: bool = True
     status: Literal["upward_drift", "downward_drift", "stable", "insufficient_data"]
+    baseline_window_start: datetime | None = None
+    baseline_window_end: datetime | None = None
+    recent_window_start: datetime | None = None
+    recent_window_end: datetime | None = None
+    baseline_observation_count: int = 0
+    recent_observation_count: int = 0
+    baseline_coverage_pct: float | None = None
+    recent_coverage_pct: float | None = None
     baseline_mean_mg_dl: float | None
     recent_mean_mg_dl: float | None
     delta_mg_dl: float | None
-    p_value: float | None
+    statistical_note: str = (
+        "Exploratory descriptive comparison only: CGM time series are serially autocorrelated, "
+        "so ordinary independent-sample t-test p-values do not establish statistical significance."
+    )
     deterministic_confidence: float
     uncertainty_notes: list[str]
     evidence: EvidenceItem | None = None

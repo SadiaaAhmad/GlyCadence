@@ -4,7 +4,11 @@ import random
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.ingestion.common import PREPROCESSING_VERSION, IngestionSummary, compute_sha256
+from app.ingestion.common import (
+    PREPROCESSING_VERSION,
+    IngestionSummary,
+    compute_input_payload_checksum,
+)
 from app.models import (
     ActivityRecord,
     ClinicalRecord,
@@ -19,6 +23,7 @@ from app.models import (
 
 DATASET_NAME = "synthetic_demo"
 SYNTHETIC_EXTERNAL_ID = "SYNTH-DEMO-001"
+LICENSE_IDENTIFIER = "INTERNAL-SYNTHETIC-DEMO"
 
 
 def seed_synthetic_demo_patient(
@@ -35,12 +40,16 @@ def seed_synthetic_demo_patient(
     """
     rng = random.Random(seed)
     base_start = start_time or datetime(2026, 8, 1, 0, 0, tzinfo=timezone.utc)
-    checksum = compute_sha256(f"synthetic_demo:v1:days={days}:seed={seed}".encode("utf-8"))
+    payload_checksum = compute_input_payload_checksum(
+        {"dataset": DATASET_NAME, "days": days, "seed": seed, "start_time": base_start.isoformat()}
+    )
 
     dataset_import = DatasetImport(
         dataset_name=DATASET_NAME,
         dataset_version=f"synth-v1-d{days}-s{seed}",
-        source_file_checksum=checksum,
+        license_identifier=LICENSE_IDENTIFIER,
+        source_file_checksum=None,
+        input_payload_checksum=payload_checksum,
         preprocessing_version=PREPROCESSING_VERSION,
         status="running",
         started_at=datetime.now(timezone.utc),
@@ -81,6 +90,7 @@ def seed_synthetic_demo_patient(
     db.flush()
 
     accepted = 0
+    cgm_count = 0
     db.add(
         ClinicalRecord(
             patient_id=patient.id,
@@ -116,10 +126,8 @@ def seed_synthetic_demo_patient(
 
     for day_idx in range(days):
         day_start = base_start + timedelta(days=day_idx)
-        # Simulate mild upward drift in final third of window
         drift_offset = 18.0 if day_idx >= (days * 2 // 3) else 0.0
 
-        # 3 meals per day
         meals_spec = [
             (8, 0, "breakfast", "Whole-wheat paratha with omelette & unsweetened chai", 420.0, 46.0, 16.0, 18.0, 6.0, 32.0),
             (13, 30, "lunch", "Chana daal with brown basmati rice & cucumber raita", 540.0, 64.0, 22.0, 14.0, 11.0, 48.0),
@@ -135,6 +143,8 @@ def seed_synthetic_demo_patient(
                     cohort_type="synthetic_demo",
                     dataset_import_id=dataset_import.id,
                     logged_at=m_ts,
+                    raw_timestamp=m_ts.isoformat(),
+                    timestamp_semantics="utc_exact",
                     meal_type=mtype,
                     description=desc,
                     ingredients=[desc],
@@ -150,7 +160,6 @@ def seed_synthetic_demo_patient(
             )
             accepted += 1
 
-        # 15-min CGM readings across the day
         for step in range(96):
             ts = day_start + timedelta(minutes=15 * step)
             baseline = 122.0 + drift_offset + rng.uniform(-5.0, 5.0)
@@ -158,7 +167,6 @@ def seed_synthetic_demo_patient(
             for m_ts, peak in meal_spikes:
                 dt_min = (ts - m_ts).total_seconds() / 60.0
                 if 0.0 < dt_min <= 180.0:
-                    # Smooth triangular excursion peaking at +60 min
                     if dt_min <= 60.0:
                         postprandial += peak * (dt_min / 60.0)
                     else:
@@ -170,19 +178,22 @@ def seed_synthetic_demo_patient(
                     cohort_type="synthetic_demo",
                     dataset_import_id=dataset_import.id,
                     recorded_at=ts,
+                    raw_timestamp=ts.isoformat(),
+                    timestamp_semantics="utc_exact",
                     glucose_mg_dl=val,
                     raw_value=val,
                     raw_unit="mg/dL",
                     reading_type="cgm",
                     device_id="Synthetic_CGM_15m",
                     sampling_interval_min=15,
+                    observation_provenance="native",
                     source_dataset=DATASET_NAME,
                     source_record_id=f"synth:cgm:d{day_idx}:s{step}",
                 )
             )
             accepted += 1
+            cgm_count += 1
 
-        # Morning and evening medication events
         for dose_idx, hr in enumerate((8, 20)):
             ev_ts = day_start + timedelta(hours=hr, minutes=15)
             status = "missed" if (day_idx >= (days * 2 // 3) and dose_idx == 1) else "taken"
@@ -200,7 +211,6 @@ def seed_synthetic_demo_patient(
             )
             accepted += 1
 
-        # Daily wellbeing & activity
         illness_cycle = (False, None, True) if day_idx == days - 1 else (False, None, False)
         db.add(
             WellbeingRecord(
@@ -248,11 +258,15 @@ def seed_synthetic_demo_patient(
         dataset_import_id=str(dataset_import.id),
         dataset_name=DATASET_NAME,
         dataset_version=dataset_import.dataset_version,
+        license_identifier=LICENSE_IDENTIFIER,
         preprocessing_version=PREPROCESSING_VERSION,
-        source_file_checksum=checksum,
+        source_file_checksum=None,
+        input_payload_checksum=payload_checksum,
         records_accepted=accepted,
         records_rejected=0,
         rejection_reasons={},
         rejected_samples=[],
         participants_ingested=1,
+        observation_provenance_counts={"native": cgm_count, "interpolated": 0, "derived": 0, "unknown": 0},
+        timestamp_semantics="utc_exact",
     )

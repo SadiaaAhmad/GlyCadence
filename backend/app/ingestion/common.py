@@ -1,15 +1,19 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
+import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Sequence
 
 from pydantic import BaseModel, Field
 
 MMOL_L_TO_MG_DL = 18.0182
 MIN_PHYSIOLOGICAL_GLUCOSE_MG_DL = 10.0
 MAX_PHYSIOLOGICAL_GLUCOSE_MG_DL = 1500.0
-PREPROCESSING_VERSION = "v1.0.0"
+PREPROCESSING_VERSION = "v1.1.0"
+
+TimestampSemanticsType = Literal["utc_exact", "real_world_local", "date_shifted_relative"]
+ObservationProvenanceType = Literal["native", "interpolated", "derived", "unknown"]
 
 MISSING_SENTINELS = {
     "",
@@ -35,14 +39,18 @@ class IngestionSummary(BaseModel):
     dataset_import_id: str
     dataset_name: str
     dataset_version: str
+    license_identifier: str
     preprocessing_version: str
-    source_file_checksum: str
+    source_file_checksum: str | None = None
+    input_payload_checksum: str | None = None
     records_accepted: int
     records_rejected: int
     rejection_reasons: dict[str, int]
     rejected_samples: list[RejectedRecord]
     participants_ingested: int
     excluded_non_t2d_participants: list[str] = Field(default_factory=list)
+    observation_provenance_counts: dict[str, int] = Field(default_factory=dict)
+    timestamp_semantics: str = "utc_exact"
 
 
 class RejectionTracker:
@@ -92,14 +100,25 @@ class RejectionTracker:
         return report
 
 
-def compute_sha256(source: Path | str | bytes) -> str:
-    """Compute deterministic SHA-256 hex digest for a file, directory of files, or raw bytes."""
-    hasher = hashlib.sha256()
-    if isinstance(source, bytes):
-        hasher.update(source)
-        return hasher.hexdigest()
+def compute_source_file_checksum(source: Path | str | None) -> str | None:
+    """Compute SHA-256 strictly over original on-disk file bytes (or directory of files).
 
+    Returns ``None`` when ``source`` is ``None``.
+    Raises ``ValueError`` if passed in-memory bytes/objects or a non-existent path,
+    preventing DataFrame or payload serializations from ever being labeled as
+    ``source_file_checksum``.
+    """
+    if source is None:
+        return None
+    if isinstance(source, (bytes, bytearray, dict, list)):
+        raise ValueError(
+            "source_file_checksum requires an existing on-disk file path; use compute_input_payload_checksum for in-memory payloads."
+        )
     path = Path(source)
+    if not path.exists():
+        raise ValueError(f"source_file_checksum path does not exist on disk: {path}")
+
+    hasher = hashlib.sha256()
     if path.is_file():
         with path.open("rb") as f:
             for chunk in iter(lambda: f.read(65536), b""):
@@ -107,7 +126,10 @@ def compute_sha256(source: Path | str | bytes) -> str:
         return hasher.hexdigest()
 
     if path.is_dir():
-        for child in sorted(p for p in path.rglob("*") if p.is_file()):
+        files = sorted(p for p in path.rglob("*") if p.is_file())
+        if not files:
+            raise ValueError(f"source_file_checksum directory contains no files: {path}")
+        for child in files:
             rel = child.relative_to(path).as_posix().encode("utf-8")
             hasher.update(rel)
             with child.open("rb") as f:
@@ -115,9 +137,40 @@ def compute_sha256(source: Path | str | bytes) -> str:
                     hasher.update(chunk)
         return hasher.hexdigest()
 
-    # Fallback for in-memory identifier strings
-    hasher.update(str(source).encode("utf-8"))
-    return hasher.hexdigest()
+    raise ValueError(f"Unsupported source_file_checksum target: {path}")
+
+
+def compute_input_payload_checksum(payload: Any) -> str:
+    """Compute SHA-256 of a documented canonical JSON serialization of structured input.
+
+    Canonical rules:
+    - UTF-8 encoded JSON with ``sort_keys=True``, ``separators=(',', ':')``,
+      and ``default=str`` for timestamps/UUIDs/paths.
+    """
+    if isinstance(payload, bytes):
+        canonical_bytes = payload
+    else:
+        canonical_json = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+        canonical_bytes = canonical_json.encode("utf-8")
+    return hashlib.sha256(canonical_bytes).hexdigest()
+
+
+def compute_sha256(source: Path | str | bytes) -> str:
+    """Low-level SHA-256 helper for raw bytes or existing file paths."""
+    if isinstance(source, bytes):
+        return hashlib.sha256(source).hexdigest()
+    path = Path(source)
+    if path.exists():
+        checksum = compute_source_file_checksum(path)
+        assert checksum is not None
+        return checksum
+    return compute_input_payload_checksum(str(source))
 
 
 def is_missing_value(value: Any) -> bool:
@@ -145,11 +198,7 @@ def normalize_glucose_reading(
     raw_value: Any,
     raw_unit: str = "mg/dL",
 ) -> tuple[float, float, str]:
-    """Validate and normalize a glucose value, returning (glucose_mg_dl, raw_float, canonical_unit).
-
-    Raises ValueError with reason code ('missing_glucose_value', 'invalid_glucose_number',
-    'invalid_unit', or 'out_of_physiological_range').
-    """
+    """Validate and normalize a glucose value, returning (glucose_mg_dl, raw_float, canonical_unit)."""
     if is_missing_value(raw_value):
         raise ValueError("missing_glucose_value")
 
@@ -182,10 +231,7 @@ def parse_utc_timestamp(
     *,
     default_tz: timezone = timezone.utc,
 ) -> datetime:
-    """Parse a timestamp value and normalize to timezone-aware UTC.
-
-    Raises ValueError('invalid_timestamp') if unparseable.
-    """
+    """Parse a timestamp value and normalize to timezone-aware UTC."""
     if is_missing_value(value):
         raise ValueError("invalid_timestamp")
 
@@ -194,7 +240,6 @@ def parse_utc_timestamp(
     elif isinstance(value, str):
         text = value.strip()
         dt = None
-        # Try ISO-8601 first
         try:
             iso_text = text.replace("Z", "+00:00") if text.endswith("Z") else text
             dt = datetime.fromisoformat(iso_text)
@@ -225,6 +270,40 @@ def parse_utc_timestamp(
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=default_tz)
     return dt.astimezone(timezone.utc)
+
+
+def parse_timestamp_with_semantics(
+    value: Any,
+    *,
+    semantics: TimestampSemanticsType = "utc_exact",
+    local_tz: timezone = timezone.utc,
+) -> tuple[datetime, str, TimestampSemanticsType]:
+    """Parse a timestamp while preserving the raw supplied string and explicit timestamp semantics.
+
+    When ``semantics == 'date_shifted_relative'`` (e.g., CGMacros on PhysioNet):
+    - Preserves the original supplied timestamp string verbatim in ``raw_timestamp``.
+    - Uses a neutral ``+00:00`` epoch reference without inferring any real-world timezone,
+      strictly preserving relative elapsed intervals and chronological ordering.
+    """
+    if is_missing_value(value):
+        raise ValueError("invalid_timestamp")
+    raw_str = value.isoformat() if isinstance(value, datetime) else str(value).strip()
+    carrier_tz = timezone.utc if semantics == "date_shifted_relative" else local_tz
+    parsed_dt = parse_utc_timestamp(value, default_tz=carrier_tz)
+    return parsed_dt, raw_str[:64], semantics
+
+
+def validate_calendar_date_comparability(
+    timestamp_semantics_values: Sequence[str],
+    *,
+    dataset_names: Sequence[str] | None = None,
+) -> None:
+    """Block cross-dataset or real-world calendar-date alignment when date_shifted_relative is present."""
+    semantics_set = {str(s).strip() for s in timestamp_semantics_values if s}
+    if "date_shifted_relative" in semantics_set:
+        if len(semantics_set) > 1 or (dataset_names and len(set(dataset_names)) > 1):
+            raise ValueError("calendar_date_comparison_forbidden_for_date_shifted_relative")
+        raise ValueError("calendar_date_comparison_forbidden_for_date_shifted_relative")
 
 
 SHANGHAI_TZ = timezone(timedelta(hours=8))

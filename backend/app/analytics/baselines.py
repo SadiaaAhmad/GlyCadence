@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 import math
 from typing import Sequence
 
@@ -28,12 +28,16 @@ class GlucosePoint:
     source_dataset: str
     sampling_interval_min: int | None = None
     device_id: str | None = None
+    observation_provenance: str = "native"
+    timestamp_semantics: str = "utc_exact"
 
 
 def prepare_glucose_points(
     readings: Sequence[GlucoseReading | GlucosePoint | dict],
+    *,
+    deduplicate_across_devices: bool = True,
 ) -> list[GlucosePoint]:
-    """Deduplicate by (recorded_at, device_id) and sort chronologically in UTC."""
+    """Extract, sort chronologically in UTC, and deduplicate glucose observations."""
     extracted: list[tuple[int, GlucosePoint]] = []
     for idx, item in enumerate(readings):
         if isinstance(item, GlucosePoint):
@@ -44,6 +48,8 @@ def prepare_glucose_points(
                 source_dataset=item.source_dataset,
                 sampling_interval_min=item.sampling_interval_min,
                 device_id=item.device_id,
+                observation_provenance=item.observation_provenance or "native",
+                timestamp_semantics=item.timestamp_semantics or "utc_exact",
             )
         elif isinstance(item, dict):
             pt = GlucosePoint(
@@ -53,6 +59,8 @@ def prepare_glucose_points(
                 source_dataset=str(item.get("source_dataset") or "app_user"),
                 sampling_interval_min=item.get("sampling_interval_min"),
                 device_id=item.get("device_id"),
+                observation_provenance=str(item.get("observation_provenance") or "native"),
+                timestamp_semantics=str(item.get("timestamp_semantics") or "utc_exact"),
             )
         else:
             pt = GlucosePoint(
@@ -62,24 +70,49 @@ def prepare_glucose_points(
                 source_dataset=str(item.source_dataset),
                 sampling_interval_min=item.sampling_interval_min,
                 device_id=item.device_id,
+                observation_provenance=getattr(item, "observation_provenance", "native") or "native",
+                timestamp_semantics=getattr(item, "timestamp_semantics", "utc_exact") or "utc_exact",
             )
 
         if math.isnan(pt.glucose_mg_dl) or math.isinf(pt.glucose_mg_dl) or pt.glucose_mg_dl <= 0:
             continue
         extracted.append((idx, pt))
 
-    # Sort by timestamp ASC, preserving first-seen source order for ties
     extracted.sort(key=lambda pair: (pair[1].recorded_at, pair[0]))
 
     deduped: list[GlucosePoint] = []
-    seen_timestamps: set[datetime] = set()
+    seen_keys: set[tuple] = set()
     for _, pt in extracted:
-        if pt.recorded_at in seen_timestamps:
+        key = (
+            (pt.recorded_at,)
+            if deduplicate_across_devices
+            else (pt.recorded_at, pt.device_id or "__none__")
+        )
+        if key in seen_keys:
             continue
-        seen_timestamps.add(pt.recorded_at)
+        seen_keys.add(key)
         deduped.append(pt)
 
     return deduped
+
+
+def filter_and_count_provenance(
+    points: Sequence[GlucosePoint],
+    *,
+    native_only: bool = True,
+) -> tuple[list[GlucosePoint], dict[str, int], int]:
+    """Count observation provenance categories and optionally filter to verified native readings."""
+    counts: dict[str, int] = {"native": 0, "interpolated": 0, "derived": 0, "unknown": 0}
+    for p in points:
+        prov = p.observation_provenance if p.observation_provenance in counts else "unknown"
+        counts[prov] += 1
+
+    if not native_only:
+        return list(points), counts, 0
+
+    native_pts = [p for p in points if p.observation_provenance == "native"]
+    excluded = len(points) - len(native_pts)
+    return native_pts, counts, excluded
 
 
 def compute_glucose_summary(
@@ -88,15 +121,26 @@ def compute_glucose_summary(
     window_start: datetime | None = None,
     window_end: datetime | None = None,
     default_interval_min: int = 15,
+    native_only: bool = True,
 ) -> GlucoseSummaryOut:
-    """Deterministically compute mean glucose, SD, CV%, TIR, TBR, TAR, and CGM coverage."""
-    points = prepare_glucose_points(readings)
+    """Deterministically compute mean glucose, SD, CV%, TIR, TBR, TAR, and CGM coverage.
+
+    When ``native_only=True`` (default), only verified ``observation_provenance == 'native'``
+    readings enter native-cadence CGM calculations; ``interpolated``, ``derived``, and
+    ``unknown`` observations are counted and excluded.
+    """
+    all_points = prepare_glucose_points(readings)
     if window_start is not None:
         w_start_filter = ensure_utc_dt(window_start)
-        points = [p for p in points if p.recorded_at >= w_start_filter]
+        all_points = [p for p in all_points if p.recorded_at >= w_start_filter]
     if window_end is not None:
         w_end_filter = ensure_utc_dt(window_end)
-        points = [p for p in points if p.recorded_at <= w_end_filter]
+        all_points = [p for p in all_points if p.recorded_at <= w_end_filter]
+
+    sem_list = sorted({p.timestamp_semantics for p in all_points}) if all_points else ["utc_exact"]
+    points, prov_counts, excluded_non_native = filter_and_count_provenance(
+        all_points, native_only=native_only
+    )
 
     coverage = compute_cgm_coverage(
         [p.recorded_at for p in points],
@@ -104,6 +148,9 @@ def compute_glucose_summary(
         window_start=window_start,
         window_end=window_end,
         default_interval_min=default_interval_min,
+        provenance_counts=prov_counts,
+        excluded_non_native_count=excluded_non_native,
+        timestamp_semantics=sem_list,
     )
 
     n = len(points)
@@ -112,6 +159,13 @@ def compute_glucose_summary(
             window_start=coverage.window_start,
             window_end=coverage.window_end,
             observation_count=0,
+            native_observation_count=prov_counts["native"],
+            interpolated_observation_count=prov_counts["interpolated"],
+            derived_observation_count=prov_counts["derived"],
+            unknown_observation_count=prov_counts["unknown"],
+            excluded_non_native_count=excluded_non_native,
+            timestamp_semantics=coverage.timestamp_semantics,
+            calendar_date_comparable=coverage.calendar_date_comparable,
             mean_glucose_mg_dl=None,
             sd_glucose_mg_dl=None,
             cv_pct=None,
@@ -173,7 +227,7 @@ def compute_glucose_summary(
             window_end=coverage.window_end,
             source_datasets=datasets,
             source_records=source_refs,
-            calculation_method="arithmetic_mean",
+            calculation_method="arithmetic_mean_native_cadence",
             calculation_version=CALCULATION_VERSION,
             missingness_pct=coverage.period_missingness_pct,
             uncertainty_notes=uncertainty_tuple,
@@ -188,7 +242,7 @@ def compute_glucose_summary(
             window_end=coverage.window_end,
             source_datasets=datasets,
             source_records=source_refs,
-            calculation_method="sample_sd_over_mean_pct",
+            calculation_method="sample_sd_over_mean_pct_native_cadence",
             calculation_version=CALCULATION_VERSION,
             missingness_pct=coverage.period_missingness_pct,
             uncertainty_notes=uncertainty_tuple,
@@ -214,6 +268,13 @@ def compute_glucose_summary(
         window_start=coverage.window_start,
         window_end=coverage.window_end,
         observation_count=n,
+        native_observation_count=prov_counts["native"],
+        interpolated_observation_count=prov_counts["interpolated"],
+        derived_observation_count=prov_counts["derived"],
+        unknown_observation_count=prov_counts["unknown"],
+        excluded_non_native_count=excluded_non_native,
+        timestamp_semantics=coverage.timestamp_semantics,
+        calendar_date_comparable=coverage.calendar_date_comparable,
         mean_glucose_mg_dl=mean_rounded,
         sd_glucose_mg_dl=sd_rounded,
         cv_pct=cv_rounded,

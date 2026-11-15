@@ -7,6 +7,10 @@ from app.schemas.analytics import CGMCoverageReport, DailyCoverageItem
 
 ENGINEERING_COVERAGE_THRESHOLD_PCT = 70.0
 CLINICAL_14D_MIN_DAYS = 14
+DATE_SHIFTED_LIMITATION_NOTE = (
+    "Timestamps use date_shifted_relative semantics (randomly shifted study dates without real-world timezone); "
+    "valid only for within-participant elapsed-time analysis and must not be aligned by calendar date across participants or datasets."
+)
 
 
 def ensure_utc_dt(dt: datetime) -> datetime:
@@ -50,19 +54,35 @@ def compute_cgm_coverage(
     window_end: datetime | None = None,
     default_interval_min: int = 15,
     engineering_threshold_pct: float = ENGINEERING_COVERAGE_THRESHOLD_PCT,
+    provenance_counts: dict[str, int] | None = None,
+    excluded_non_native_count: int = 0,
+    timestamp_semantics: Sequence[str] | None = None,
 ) -> CGMCoverageReport:
-    """Compute monitoring-period coverage and daily coverage with explicit thresholds.
-
-    - Deduplicates identical timestamps.
-    - Never interpolates across missing intervals.
-    - Flags days with <70% daily coverage as ``is_partial_day = True``.
-    - Surfaces explicit uncertainty notes when window duration <14 days or coverage <70%.
-    """
+    """Compute monitoring-period coverage and daily coverage with explicit thresholds and provenance."""
     unique_sorted = sorted(set(ensure_utc_dt(t) for t in timestamps))
     interval_min = infer_native_sampling_interval_min(
         unique_sorted, sampling_intervals, default_interval_min=default_interval_min
     )
     expected_per_day = max(1, int(round(1440.0 / interval_min)))
+
+    p_counts = provenance_counts or {
+        "native": len(unique_sorted),
+        "interpolated": 0,
+        "derived": 0,
+        "unknown": 0,
+    }
+    sem_list = sorted(set(timestamp_semantics)) if timestamp_semantics else ["utc_exact"]
+    cal_comparable = "date_shifted_relative" not in sem_list
+
+    extra_notes: list[str] = []
+    if not cal_comparable:
+        extra_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
+    if excluded_non_native_count > 0:
+        extra_notes.append(
+            f"Excluded {excluded_non_native_count} reading(s) with non-native provenance "
+            f"(interpolated={p_counts.get('interpolated', 0)}, derived={p_counts.get('derived', 0)}, "
+            f"unknown={p_counts.get('unknown', 0)}) from native-cadence CGM analytics."
+        )
 
     if not unique_sorted:
         now = datetime.now(timezone.utc)
@@ -81,11 +101,21 @@ def compute_cgm_coverage(
             full_days_count=0,
             large_gaps_count=0,
             max_gap_minutes=0.0,
+            native_observation_count=p_counts.get("native", 0),
+            interpolated_observation_count=p_counts.get("interpolated", 0),
+            derived_observation_count=p_counts.get("derived", 0),
+            unknown_observation_count=p_counts.get("unknown", 0),
+            excluded_non_native_count=excluded_non_native_count,
+            timestamp_semantics=sem_list,
+            calendar_date_comparable=cal_comparable,
             engineering_threshold_pct=engineering_threshold_pct,
             meets_14d_clinical_guidance=False,
             meets_engineering_period_threshold=False,
             deterministic_confidence=0.0,
-            uncertainty_notes=["No valid CGM readings available in the requested window."],
+            uncertainty_notes=[
+                "No verified native CGM readings available in the requested window.",
+                *extra_notes,
+            ],
         )
 
     w_start = ensure_utc_dt(window_start) if window_start else unique_sorted[0]
@@ -96,7 +126,6 @@ def compute_cgm_coverage(
     in_window = [t for t in unique_sorted if w_start <= t <= w_end]
     observed_count = len(in_window)
 
-    # Group by UTC calendar date across the covered date span
     start_date: date = w_start.date()
     end_date: date = w_end.date()
     counts_by_day: dict[date, int] = defaultdict(int)
@@ -129,9 +158,6 @@ def compute_cgm_coverage(
             )
         )
 
-    # Expected readings across the monitoring period:
-    # If explicit window_start and window_end span >= 1 interval, use exact elapsed intervals + 1
-    # when window is sub-day, or calendar-day expectation when spanning full days.
     elapsed_minutes = max(0.0, (w_end - w_start).total_seconds() / 60.0)
     if window_start is not None and window_end is not None and elapsed_minutes >= interval_min:
         expected_period = int(math.floor(elapsed_minutes / interval_min)) + 1
@@ -142,7 +168,6 @@ def compute_cgm_coverage(
     period_cov_pct = min(100.0, round((observed_count / expected_period) * 100.0, 2))
     period_miss_pct = round(max(0.0, 100.0 - period_cov_pct), 2)
 
-    # Detect large sensor gaps (> 2 * native sampling interval)
     gap_threshold_min = 2.0 * interval_min
     large_gaps = 0
     max_gap_min = 0.0
@@ -156,7 +181,7 @@ def compute_cgm_coverage(
     meets_eng = period_cov_pct >= engineering_threshold_pct
     meets_14d = total_calendar_days >= CLINICAL_14D_MIN_DAYS and meets_eng
 
-    notes: list[str] = []
+    notes: list[str] = list(extra_notes)
     if total_calendar_days < CLINICAL_14D_MIN_DAYS:
         notes.append(
             f"Monitoring window spans {total_calendar_days} day(s), below the 14-day clinical AGP consensus reference."
@@ -193,6 +218,13 @@ def compute_cgm_coverage(
         full_days_count=full_days,
         large_gaps_count=large_gaps,
         max_gap_minutes=max_gap_min,
+        native_observation_count=p_counts.get("native", 0),
+        interpolated_observation_count=p_counts.get("interpolated", 0),
+        derived_observation_count=p_counts.get("derived", 0),
+        unknown_observation_count=p_counts.get("unknown", 0),
+        excluded_non_native_count=excluded_non_native_count,
+        timestamp_semantics=sem_list,
+        calendar_date_comparable=cal_comparable,
         engineering_threshold_pct=engineering_threshold_pct,
         meets_14d_clinical_guidance=meets_14d,
         meets_engineering_period_threshold=meets_eng,

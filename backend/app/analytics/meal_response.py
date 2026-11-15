@@ -1,8 +1,12 @@
 from datetime import datetime, timedelta
 from typing import Sequence
 
-from app.analytics.baselines import GlucosePoint, prepare_glucose_points
-from app.analytics.data_quality import ensure_utc_dt
+from app.analytics.baselines import (
+    GlucosePoint,
+    filter_and_count_provenance,
+    prepare_glucose_points,
+)
+from app.analytics.data_quality import DATE_SHIFTED_LIMITATION_NOTE, ensure_utc_dt
 from app.models import GlucoseReading, Meal
 from app.schemas.analytics import (
     CALCULATION_VERSION,
@@ -27,23 +31,24 @@ def evaluate_single_meal_response(
     carbs_g: float | None,
     meal_source_dataset: str,
     glucose_readings: Sequence[GlucoseReading | GlucosePoint | dict],
+    meal_timestamp_semantics: str = "utc_exact",
+    native_only: bool = True,
 ) -> MealResponseItem:
-    """Compute postprandial excursion and strict positive trapezoidal iAUC for one meal.
-
-    Strict validity gates (all 4 required for ``iauc_valid = True``):
-    1. Pre-meal anchor: >=1 valid reading in [-30 min, 0 min]; closest to logged_at is
-       anchored at t = 0 as baseline G_0.
-    2. Post-meal count: >=5 separate post-meal readings in (0 min, +180 min].
-    3. Window coverage: post-meal coverage within [0, +180 min] spans >=120 minutes
-       (last post-meal reading at t >= 120 min).
-    4. Max consecutive gap: <=30 minutes across the entire integration path starting
-       from the t = 0 baseline anchor through the last post-meal reading.
-    """
+    """Compute postprandial excursion and strict positive trapezoidal iAUC for one meal."""
     meal_ts = ensure_utc_dt(logged_at)
-    points = prepare_glucose_points(glucose_readings)
+    all_points = prepare_glucose_points(glucose_readings)
 
     pre_start = meal_ts - timedelta(minutes=PRE_MEAL_WINDOW_MIN)
     post_end = meal_ts + timedelta(minutes=POST_MEAL_WINDOW_MIN)
+    window_points = [p for p in all_points if pre_start <= p.recorded_at <= post_end]
+
+    points, prov_counts, excluded_non_native = filter_and_count_provenance(
+        window_points, native_only=native_only
+    )
+
+    sem_set = {meal_timestamp_semantics, *(p.timestamp_semantics for p in window_points)}
+    resolved_sem = "date_shifted_relative" if "date_shifted_relative" in sem_set else meal_timestamp_semantics
+    cal_comparable = resolved_sem != "date_shifted_relative"
 
     pre_candidates = [p for p in points if pre_start <= p.recorded_at <= meal_ts]
     post_points = [p for p in points if meal_ts < p.recorded_at <= post_end]
@@ -51,25 +56,29 @@ def evaluate_single_meal_response(
     rejection_reasons: list[str] = []
     uncertainty_notes: list[str] = []
 
-    # 1. Pre-meal baseline anchor (closest to meal_ts in [-30m, 0m])
+    if not cal_comparable:
+        uncertainty_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
+    if excluded_non_native > 0:
+        uncertainty_notes.append(
+            f"Excluded {excluded_non_native} non-native glucose reading(s) (interpolated/derived/unknown) in meal window."
+        )
+
     anchor_point: GlucosePoint | None = None
     if pre_candidates:
         anchor_point = max(pre_candidates, key=lambda p: p.recorded_at)
     else:
         rejection_reasons.append("missing_pre_meal_baseline_anchor_within_30m")
         uncertainty_notes.append(
-            "No valid pre-meal glucose reading found within [-30 min, 0 min] of meal timestamp."
+            "No valid native pre-meal glucose reading found within [-30 min, 0 min] of meal timestamp."
         )
 
-    # 2. Post-meal reading count
     post_count = len(post_points)
     if post_count < MIN_POST_MEAL_READINGS:
         rejection_reasons.append("insufficient_post_meal_readings_lt_5")
         uncertainty_notes.append(
-            f"Only {post_count} post-meal reading(s) in (0, +180 min]; at least {MIN_POST_MEAL_READINGS} required."
+            f"Only {post_count} verified native post-meal reading(s) in (0, +180 min]; at least {MIN_POST_MEAL_READINGS} required."
         )
 
-    # 3. Post-meal window coverage span within [0, +180 min]
     post_times_min = [(p.recorded_at - meal_ts).total_seconds() / 60.0 for p in post_points]
     span_minutes = round(post_times_min[-1], 2) if post_times_min else 0.0
     if span_minutes < MIN_POST_MEAL_SPAN_MIN - 1e-6:
@@ -78,7 +87,6 @@ def evaluate_single_meal_response(
             f"Post-meal observations reach {span_minutes:.1f} min post-meal; >=120.0 min coverage required."
         )
 
-    # 4. Consecutive sampling gap check (including t = 0 baseline anchor)
     max_gap_min: float | None = None
     if post_times_min:
         path_times = [0.0, *post_times_min]
@@ -105,11 +113,14 @@ def evaluate_single_meal_response(
             meal_type=meal_type,
             description=description,
             carbs_g=carbs_g,
+            timestamp_semantics=resolved_sem,
+            calendar_date_comparable=cal_comparable,
             pre_meal_glucose_mg_dl=pre_val,
             pre_meal_recorded_at=anchor_point.recorded_at if anchor_point else None,
             peak_post_meal_glucose_mg_dl=peak_post,
             excursion_delta_mg_dl=excursion_delta,
             post_meal_reading_count=post_count,
+            excluded_non_native_count=excluded_non_native,
             post_meal_span_minutes=span_minutes,
             max_consecutive_gap_minutes=max_gap_min,
             iauc_mg_dl_min=None,
@@ -119,7 +130,6 @@ def evaluate_single_meal_response(
             evidence=None,
         )
 
-    # Valid iAUC: positive trapezoidal integration above G_0 anchored at t = 0
     g0 = anchor_point.glucose_mg_dl
     vertices_t = [0.0, *post_times_min]
     vertices_pos_g = [0.0, *[max(p.glucose_mg_dl - g0, 0.0) for p in post_points]]
@@ -131,7 +141,6 @@ def evaluate_single_meal_response(
 
     iauc_rounded = round(iauc, 2)
 
-    # Expected readings across [0, +180 min] based on native interval (default 15m -> 12 post-meal readings)
     intervals = [p.sampling_interval_min for p in post_points if p.sampling_interval_min]
     native_interval = intervals[0] if intervals else 15
     expected_post_count = max(MIN_POST_MEAL_READINGS, int(round(POST_MEAL_WINDOW_MIN / native_interval)))
@@ -188,11 +197,14 @@ def evaluate_single_meal_response(
         meal_type=meal_type,
         description=description,
         carbs_g=carbs_g,
+        timestamp_semantics=resolved_sem,
+        calendar_date_comparable=cal_comparable,
         pre_meal_glucose_mg_dl=pre_val,
         pre_meal_recorded_at=anchor_point.recorded_at,
         peak_post_meal_glucose_mg_dl=peak_post,
         excursion_delta_mg_dl=excursion_delta,
         post_meal_reading_count=post_count,
+        excluded_non_native_count=excluded_non_native,
         post_meal_span_minutes=span_minutes,
         max_consecutive_gap_minutes=max_gap_min,
         iauc_mg_dl_min=iauc_rounded,
@@ -206,6 +218,8 @@ def evaluate_single_meal_response(
 def evaluate_meal_responses(
     meals: Sequence[Meal | dict],
     glucose_readings: Sequence[GlucoseReading | GlucosePoint | dict],
+    *,
+    native_only: bool = True,
 ) -> list[MealResponseItem]:
     """Evaluate postprandial responses across a sequence of meals."""
     points = prepare_glucose_points(glucose_readings)
@@ -218,6 +232,7 @@ def evaluate_meal_responses(
             m_desc = str(meal.get("description") or "")
             m_carbs = float(meal["carbs_g"]) if meal.get("carbs_g") is not None else None
             m_ds = str(meal.get("source_dataset") or "app_user")
+            m_sem = str(meal.get("timestamp_semantics") or "utc_exact")
         else:
             m_id = str(meal.id)
             m_ts = ensure_utc_dt(meal.logged_at)
@@ -225,6 +240,7 @@ def evaluate_meal_responses(
             m_desc = meal.description
             m_carbs = meal.carbs_g
             m_ds = meal.source_dataset
+            m_sem = getattr(meal, "timestamp_semantics", "utc_exact") or "utc_exact"
 
         results.append(
             evaluate_single_meal_response(
@@ -234,7 +250,9 @@ def evaluate_meal_responses(
                 description=m_desc,
                 carbs_g=m_carbs,
                 meal_source_dataset=m_ds,
+                meal_timestamp_semantics=m_sem,
                 glucose_readings=points,
+                native_only=native_only,
             )
         )
     return results

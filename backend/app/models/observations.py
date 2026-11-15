@@ -61,12 +61,19 @@ class GlucoseReading(Base):
         UUID(as_uuid=True), ForeignKey("dataset_imports.id", ondelete="SET NULL"), nullable=True
     )
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_timestamp: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    timestamp_semantics: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="utc_exact", server_default=text("'utc_exact'")
+    )
     glucose_mg_dl: Mapped[float] = mapped_column(Float, nullable=False)
     raw_value: Mapped[float] = mapped_column(Float, nullable=False)
     raw_unit: Mapped[str] = mapped_column(String(16), nullable=False, default="mg/dL")
     reading_type: Mapped[str] = mapped_column(String(32), nullable=False)
     device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sampling_interval_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observation_provenance: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="native", server_default=text("'native'")
+    )
     source_dataset: Mapped[str] = mapped_column(String(64), nullable=False, default="app_user")
     source_record_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -83,7 +90,23 @@ class GlucoseReading(Base):
             "reading_type IN ('cgm', 'fasting', 'pre_meal', 'post_meal', 'bedtime', 'cbg')",
             name="ck_glucose_reading_type",
         ),
+        CheckConstraint(
+            "timestamp_semantics IN ('utc_exact', 'real_world_local', 'date_shifted_relative')",
+            name="ck_glucose_timestamp_semantics",
+        ),
+        CheckConstraint(
+            "observation_provenance IN ('native', 'interpolated', 'derived', 'unknown')",
+            name="ck_glucose_observation_provenance",
+        ),
         Index("idx_glucose_patient_time", "patient_id", text("recorded_at DESC")),
+        Index(
+            "uq_glucose_patient_time_type_device",
+            "patient_id",
+            "recorded_at",
+            "reading_type",
+            text("COALESCE(device_id, '__none__')"),
+            unique=True,
+        ),
         Index(
             "uq_glucose_idempotency",
             "patient_id",
@@ -104,6 +127,10 @@ class Meal(Base):
         UUID(as_uuid=True), ForeignKey("dataset_imports.id", ondelete="SET NULL"), nullable=True
     )
     logged_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    raw_timestamp: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    timestamp_semantics: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="utc_exact", server_default=text("'utc_exact'")
+    )
     meal_type: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
     description: Mapped[str] = mapped_column(Text, nullable=False)
     ingredients: Mapped[list] = mapped_column(

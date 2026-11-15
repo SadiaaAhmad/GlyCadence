@@ -59,7 +59,9 @@ class DatasetImport(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     dataset_name: Mapped[str] = mapped_column(String(64), nullable=False)
     dataset_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_file_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    license_identifier: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_file_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_payload_checksum: Mapped[str | None] = mapped_column(String(64), nullable=True)
     preprocessing_version: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="running")
     records_accepted: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -74,6 +76,10 @@ class DatasetImport(Base):
             name="ck_dataset_imports_name",
         ),
         CheckConstraint("status IN ('running', 'completed', 'failed')", name="ck_dataset_imports_status"),
+        CheckConstraint(
+            "source_file_checksum IS NOT NULL OR input_payload_checksum IS NOT NULL",
+            name="ck_dataset_imports_checksum_present",
+        ),
     )
 
 
