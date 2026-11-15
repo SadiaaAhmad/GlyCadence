@@ -958,3 +958,109 @@ def test_audit_item_2_per_meal_window_dedup_count():
     assert res[1].meal_id == "meal-evening"
     assert res[1].deduplicated_removed_count == 0
     assert not any("duplicate" in n.lower() for n in res[1].uncertainty_notes)
+
+
+# ---------------------------------------------------------------------------
+# Audit Item 3 — Ingestion report reconciliation (accepted == sum of table inserts)
+# ---------------------------------------------------------------------------
+
+
+def test_audit_item_3_ingestion_accepted_and_rejected_reconcile_with_table_counts():
+    from app.models import (
+        ActivityRecord,
+        ClinicalRecord,
+        Meal,
+        Medication,
+        MedicationEvent,
+    )
+
+    conn = get_engine().connect()
+    outer_tx = conn.begin()
+    db = Session(bind=conn)
+    try:
+        summary_rows = [
+            {
+                "Patient Number": "9301_0",
+                "Age (years)": 58,
+                "Gender (Female=1, Male=2)": 1,
+                "HbA1c (%)": 7.6,
+                "Hypoglycemic Agents": "Metformin 500mg",
+            }
+        ]
+        ts_rows = [
+            # Row 0: valid CGM + CBG + Meal + novel Medication (Glimepiride 2mg) -> creates Medication + MedicationEvent
+            {
+                "Date": "2023-07-01 08:00:00",
+                "CGM (mg / dl)": 128.0,
+                "CBG (mg / dl)": 130.0,
+                "Dietary intake": "Steamed bun",
+                "Non-insulin hypoglycemic agents": "Glimepiride 2mg",
+            },
+            # Row 1: blank timestamp -> rejected as invalid_timestamp
+            {
+                "Date": "",
+                "CGM (mg / dl)": 140.0,
+            },
+            # Row 2: valid timestamp, non-numeric CGM ("ketone") + out-of-range CBG (2044.8 mg/dL) -> 2 rejections
+            {
+                "Date": "2023-07-01 08:15:00",
+                "CGM (mg / dl)": "ketone",
+                "CBG (mg / dl)": 2044.8,
+            },
+        ]
+
+        res = ingest_shanghai_t2dm(
+            db,
+            summary_source=summary_rows,
+            participant_sources={"9301_0": ts_rows},
+        )
+        p = db.scalar(
+            select(Patient).where(
+                Patient.cohort_type == "research_participant",
+                Patient.source_dataset == "shanghai_t2dm",
+                Patient.external_id == "9301",
+            )
+        )
+        assert p is not None
+
+        cgm_cnt = len(
+            db.scalars(
+                select(GlucoseReading).where(
+                    GlucoseReading.patient_id == p.id, GlucoseReading.reading_type == "cgm"
+                )
+            ).all()
+        )
+        cbg_cnt = len(
+            db.scalars(
+                select(GlucoseReading).where(
+                    GlucoseReading.patient_id == p.id, GlucoseReading.reading_type == "cbg"
+                )
+            ).all()
+        )
+        meal_cnt = len(db.scalars(select(Meal).where(Meal.patient_id == p.id)).all())
+        med_cnt = len(db.scalars(select(Medication).where(Medication.patient_id == p.id)).all())
+        med_ev_cnt = len(
+            db.scalars(select(MedicationEvent).where(MedicationEvent.patient_id == p.id)).all()
+        )
+        clin_cnt = len(
+            db.scalars(select(ClinicalRecord).where(ClinicalRecord.patient_id == p.id)).all()
+        )
+        act_cnt = len(
+            db.scalars(select(ActivityRecord).where(ActivityRecord.patient_id == p.id)).all()
+        )
+
+        total_table_inserts = (
+            cgm_cnt + cbg_cnt + meal_cnt + med_cnt + med_ev_cnt + clin_cnt + act_cnt
+        )
+        total_rejection_tally = sum(res.rejection_reasons.values())
+
+        assert res.records_accepted == total_table_inserts
+        assert res.records_rejected == total_rejection_tally
+        assert (
+            res.records_accepted + res.records_rejected
+            == total_table_inserts + total_rejection_tally
+        )
+    finally:
+        db.close()
+        outer_tx.rollback()
+        conn.close()

@@ -55,11 +55,11 @@ Verbatim Figshare REST API v2 metadata responses (`https://api.figshare.com/v2/a
 | **CGM Rows Ingested (`reading_type="cgm"`)** | 96,784 | 112,287 | 418,165 (`209,595` Libre + `208,570` Dexcom) |
 | **CBG Rows Ingested (`reading_type="cbg"`)** | 2,007 | 3,261 | 0 |
 | **Meals Ingested** | 2,640 | 3,060 | 455 |
-| **Medication Regimens Ingested** | 550 | 430 | 0 |
+| **Medication Regimens Ingested** | 550 (`84` summary + `466` timestamped) | 430 (`100` summary + `330` timestamped) | 0 |
 | **Medication Events Ingested** | 1,968 | 2,993 | 0 |
 | **Clinical Records Ingested** | 90 | 109 | 14 |
 | **Activity Records Ingested** | 0 | 0 | 194,344 |
-| **Total Records Accepted** | **103,573** | **121,810** | **612,978** |
+| **Total Records Accepted** | **104,039** | **122,140** | **612,978** |
 | **Total Records Rejected** | **5,283** | **93** | **0** |
 | **Provenance: `native`** | 0 | 0 | 0 |
 | **Provenance: `interpolated`** | 0 | 0 | 0 |
@@ -67,6 +67,18 @@ Verbatim Figshare REST API v2 metadata responses (`https://api.figshare.com/v2/a
 | **Provenance: `unknown`** | 98,791 | 115,548 | 418,165 |
 | **Timestamp Semantics** | `real_world_local` | `real_world_local` | `date_shifted_relative` |
 | **Timezone Basis** | `assumed_study_location` | `assumed_study_location` | `not_applicable_relative` |
+
+### 3.1 Exact Reconciliation of Per-Table Inserts & Rejections
+- **ShanghaiT2DM v1 (`Diabetes_dataset.zip`):**
+  - `96,784` (CGM) + `2,007` (CBG) + `2,640` (Meals) + `550` (Medication regimens: `84` from summary sheet + `466` novel regimens discovered in timestamped rows) + `1,968` (Medication events) + `90` (Clinical records) + `0` (Activity) = **`104,039` accepted records**.
+  - Rejections: `5,255` (`invalid_timestamp`) + `27` (`invalid_glucose_number`) + `1` (`out_of_physiological_range`) = **`5,283` rejected records**.
+  - `records_accepted + records_rejected` = `104,039 + 5,283` = **`109,322`**.
+- **ShanghaiT2DM v3 (`data.zip`):**
+  - `112,287` (CGM) + `3,261` (CBG) + `3,060` (Meals) + `430` (Medication regimens: `100` from summary sheet + `330` novel regimens discovered in timestamped rows) + `2,993` (Medication events) + `109` (Clinical records) + `0` (Activity) = **`122,140` accepted records**.
+  - Rejections: `92` (`invalid_timestamp`) + `1` (`out_of_physiological_range`) = **`93` rejected records**.
+  - `records_accepted + records_rejected` = `122,140 + 93` = **`122,233`**.
+- **CGMacros v1.0.0 (`t2d_only=True`):**
+  - `418,165` (CGM) + `0` (CBG) + `455` (Meals) + `0` (Medications) + `0` (Medication events) + `14` (Clinical records) + `194,344` (Activity) = **`612,978` accepted records**, **`0` rejected records**.
 
 ---
 

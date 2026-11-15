@@ -731,6 +731,7 @@ def ingest_shanghai_t2dm(
                     db.add(med_obj)
                     db.flush()
                     known_meds[med_key] = med_obj
+                    tracker.accept()
 
                 if not is_missing_value(explicit_cell_ref):
                     cell_ref: str | None = str(explicit_cell_ref).strip()[:64]
