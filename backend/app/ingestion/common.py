@@ -2,8 +2,9 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 import hashlib
 import json
 import math
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Literal, Sequence
+import zipfile
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, Field
@@ -255,22 +256,105 @@ def compute_input_payload_checksum(payload: Any) -> str:
 
 
 def compute_sha256(source: Path | str | bytes) -> str:
-    """Low-level SHA-256 helper for raw bytes or existing file paths."""
+    """Low-level SHA-256 helper for raw bytes or existing file/directory paths on disk.
+
+    Raises ``ValueError`` if a ``Path`` or ``str`` path does not exist on disk
+    (never falls back to hashing the path string).
+    """
     if isinstance(source, bytes):
         return hashlib.sha256(source).hexdigest()
     path = Path(source)
-    if path.exists():
-        if path.is_dir():
-            checksum = compute_directory_manifest_checksum(path)
-        else:
-            checksum = compute_source_file_checksum(path)
-        assert checksum is not None
-        return checksum
-    return compute_input_payload_checksum(str(source))
+    if not path.exists():
+        raise ValueError(f"compute_sha256 path does not exist on disk: {path}")
+    if path.is_dir():
+        checksum = compute_directory_manifest_checksum(path)
+    else:
+        checksum = compute_source_file_checksum(path)
+    assert checksum is not None
+    return checksum
+
+
+def extract_zip_safely(archive_path: Path | str, dest_dir: Path | str) -> list[Path]:
+    """Validate and extract a ZIP archive into ``dest_dir`` with strict zip-slip protection.
+
+    All archive entries are validated BEFORE any bytes are extracted:
+    - Rejects absolute POSIX or Windows paths and Windows drive letters.
+    - Rejects any ``..`` path traversal components.
+    - Rejects any member whose resolved destination escapes ``dest_dir.resolve()``.
+    - Skips macOS ``__MACOSX`` metadata and Office temporary lock files (``~$``).
+    """
+    arch = Path(archive_path)
+    if not arch.exists() or not arch.is_file():
+        raise ValueError(f"ZIP archive does not exist or is not a regular file: {arch}")
+
+    dest_root = Path(dest_dir).resolve()
+    dest_root.mkdir(parents=True, exist_ok=True)
+
+    extracted_files: list[Path] = []
+    with zipfile.ZipFile(arch, "r") as zf:
+        members = zf.infolist()
+        validated_targets: list[tuple[zipfile.ZipInfo, Path]] = []
+        for info in members:
+            raw_name = info.filename
+            norm_posix = raw_name.replace("\\", "/")
+            posix_path = PurePosixPath(norm_posix)
+            win_path = PureWindowsPath(raw_name)
+
+            if (
+                raw_name.startswith(("/", "\\"))
+                or posix_path.is_absolute()
+                or win_path.is_absolute()
+                or bool(win_path.drive)
+                or ".." in posix_path.parts
+                or ".." in win_path.parts
+            ):
+                raise ValueError(
+                    f"zip_slip_path_traversal_detected: unsafe archive entry {raw_name!r}"
+                )
+
+            target_path = (dest_root / Path(*posix_path.parts)).resolve()
+            if not target_path.is_relative_to(dest_root):
+                raise ValueError(
+                    f"zip_slip_path_traversal_detected: entry {raw_name!r} escapes {dest_root}"
+                )
+
+            if info.is_dir() or raw_name.endswith("/"):
+                continue
+            if "__MACOSX" in posix_path.parts or posix_path.name.startswith("~$"):
+                continue
+            validated_targets.append((info, target_path))
+
+        for idx, (info, target_path) in enumerate(validated_targets):
+            # Safely handle non-ASCII filenames on Windows filesystems if needed
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info, "r") as src, target_path.open("wb") as dst:
+                    for chunk in iter(lambda: src.read(65536), b""):
+                        dst.write(chunk)
+                extracted_files.append(target_path)
+            except OSError:
+                fallback_rel = Path(*[
+                    p if p.isascii() else f"dir_{i}"
+                    for i, p in enumerate(target_path.relative_to(dest_root).parts[:-1])
+                ]) / (
+                    target_path.name
+                    if target_path.name.isascii()
+                    else f"file_{idx}{target_path.suffix}"
+                )
+                safe_target = (dest_root / fallback_rel).resolve()
+                safe_target.parent.mkdir(parents=True, exist_ok=True)
+                with zf.open(info, "r") as src, safe_target.open("wb") as dst:
+                    for chunk in iter(lambda: src.read(65536), b""):
+                        dst.write(chunk)
+                extracted_files.append(safe_target)
+
+    return extracted_files
 
 
 def is_missing_value(value: Any) -> bool:
     if value is None:
+        return True
+    if type(value).__name__ == "NaTType":
         return True
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return True

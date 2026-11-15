@@ -513,7 +513,7 @@ def test_shanghai_t2dm_cgmacros_provenance_consent_immutability_and_medication_d
             ).all()
         )
         assert len(st_meds) == 2  # 1 summary Acarbose + 1 time-series Metformin
-        assert len(st_med_events) == 2  # 08:15 event + 20:00 event (08:30 contiguous fill-down suppressed!)
+        assert len(st_med_events) == 3  # All 3 non-empty medication rows preserved with status='unknown'
         assert st_med_events[0].status == "unknown"
         assert st_med_events[0].notes == "Metformin 0.5g"
         assert st_med_events[0].source_sheet == "9001_0_20230101"
@@ -522,8 +522,13 @@ def test_shanghai_t2dm_cgmacros_provenance_consent_immutability_and_medication_d
         assert st_med_events[1].status == "unknown"
         assert st_med_events[1].notes == "Metformin 0.5g"
         assert st_med_events[1].source_sheet == "9001_0_20230101"
-        assert st_med_events[1].source_cell_ref == "G50"
-        assert st_med_events[1].event_time == datetime(2023, 1, 1, 12, 0, tzinfo=timezone.utc)
+        assert st_med_events[1].source_cell_ref == "G4"
+        assert st_med_events[1].event_time == datetime(2023, 1, 1, 0, 30, tzinfo=timezone.utc)
+        assert st_med_events[2].status == "unknown"
+        assert st_med_events[2].notes == "Metformin 0.5g"
+        assert st_med_events[2].source_sheet == "9001_0_20230101"
+        assert st_med_events[2].source_cell_ref == "G50"
+        assert st_med_events[2].event_time == datetime(2023, 1, 1, 12, 0, tzinfo=timezone.utc)
 
         # B. CGMacros Ingestion:
         # 1. Verify official PhysioNet v1.0.0 DOI '10.13026/3z8q-x658' and license 'CC BY-NC-SA 4.0'.

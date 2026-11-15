@@ -33,38 +33,44 @@ GlyCadence strictly separates regular-file byte hashes, directory manifest hashe
 
 ### Official Access, Figshare Item/Collection Version Verification & License Evidence
 - **Publication:** Zhao, Q., Zhu, J., Shen, X., Lin, C., Zhang, Y., Liang, Y., Cao, B., Li, J., Liu, X., Rao, W., & Wang, C. *Chinese diabetes datasets for data-driven machine learning.* **Scientific Data** 10, 35 (2023). DOI: `https://doi.org/10.1038/s41597-023-01940-7`
-- **Official Figshare Metadata (Verified via Figshare REST API v2):**
+- **Official Figshare Metadata (Verified via Figshare REST API v2 — committed verbatim in `docs/provenance/figshare_20444397_v1.json`, `v2.json`, and `v3.json`):**
   1. **Primary Figshare Dataset Item (`20444397`, Version `1` — Default Reference Target):**
      - **Title:** *Diabetes Datasets-ShanghaiT1DM and ShanghaiT2DM*
      - **Versioned Item DOI:** `10.6084/m9.figshare.20444397.v1` (`https://doi.org/10.6084/m9.figshare.20444397.v1`)
-     - **Published Date:** `2022-08-06T03:06:12Z`
-     - **Archive File & Download URL:** `Diabetes_dataset.zip` (`https://ndownloader.figshare.com/files/36582306`, size `4,117,909` bytes, Figshare MD5 `ef6531d11f9ba26e88c387ecb2e47fa9`)
+     - **API Timestamps (`figshare_20444397_v1.json`):** `created_date: "2022-08-06T16:25:02Z"`, `published_date: "2022-08-06T16:25:02Z"`, `modified_date: "2022-11-20T07:14:35Z"`
+     - **Archive File & Download URL:** `Diabetes_dataset.zip` (Figshare file ID `36582306`, `https://ndownloader.figshare.com/files/36582306`, exact byte size **`732,371` bytes** (`"size": 732371`), `supplied_md5` / `computed_md5`: `ef6531d11f9ba26e88c387ecb2e47fa9`, verified on-disk SHA-256: `f42ceec19b95010c15aa8fa7b0a9d9a3e1a0977680ee8f1089145e81b6ca2b67`)
+     - **Contents of `Diabetes_dataset.zip` (v1):** `ShanghaiT2DM.xlsx` (86 T2DM participants across 2 sheets: `'Sheet1'` in Chinese and `'翻译后'` in English) + 90 CSV files (`ShanghaiT2DM/1018_0.csv` .. `ShanghaiT2DM/1110_1.csv`).
      - **License:** **`CC BY 4.0`** (`https://creativecommons.org/licenses/by/4.0/`)
-  2. **Associated Figshare Collection (`6310860`) & Linked Multi-Version Item (`21600933`):**
+  2. **Figshare Dataset Item (`20444397`, Version `3` — Expanded 100-Patient / 109-Admission Workbook Release):**
+     - **Versioned Item DOI:** `10.6084/m9.figshare.20444397.v3` (`https://doi.org/10.6084/m9.figshare.20444397.v3`)
+     - **API Timestamps (`figshare_20444397_v3.json`):** `created_date: "2022-11-20T07:14:35Z"`, `published_date: "2022-11-20T07:14:35Z"`, `modified_date: "2022-11-20T07:14:36Z"`
+     - **Archive File & Download URL:** `data.zip` (Figshare file ID `38259264`, `https://ndownloader.figshare.com/files/38259264`, exact byte size **`3,418,039` bytes** (`"size": 3418039`), `supplied_md5` / `computed_md5`: `ecadc819dd20aeb92d60ce41ceb16fd2`)
+     - **Contents of `data.zip` (v3):** `Shanghai_T2DM_Summary.xlsx` (sheet `'T2DM'`, 109 rows across 100 unique T2D participants) + 109 workbooks (`Shanghai_T2DM/2000_0_20201230.xlsx` .. `2099_0_20201116.xls`, 20 `.xlsx` + 89 `.xls`).
+  3. **Associated Figshare Collection (`6310860`):**
      - **Collection Title:** *Chinese diabetes datasets for data-driven machine learning*
      - **Collection DOIs:** Version 1: `10.6084/m9.figshare.c.6310860.v1` (`2023-01-12`); Version 2: `10.6084/m9.figshare.c.6310860.v2` (`2023-03-21`)
-     - **Linked Item `21600933` (*diabetes_datasets.zip*):**
-       - Version 1 (`10.6084/m9.figshare.21600933.v1`, `2023-01-12`): `diabetes_datasets.zip` (`https://ndownloader.figshare.com/files/38283708`, Figshare MD5 `01fd2deaf16a41aa095ff46f8d900b67`, license `CC BY 4.0`).
-       - Version 5 (`10.6084/m9.figshare.21600933.v5`, `2023-03-21`): `diabetes_datasets.zip` (`https://ndownloader.figshare.com/files/42966622`, Figshare MD5 `4bfb61cfa506b48155fd9e841ee48e21`, license `CC BY 4.0`).
-  - **GlyCadence Provenance Pinning:** `ingest_shanghai_t2dm_records()` defaults to pinning `dataset_version = 'figshare-item-20444397-v1'`, `dataset_doi = '10.6084/m9.figshare.20444397.v1'`, `source_url = 'https://ndownloader.figshare.com/files/36582306'`, `license_identifier = 'CC BY 4.0'`, and `license_url = 'https://creativecommons.org/licenses/by/4.0/'` (and accepts explicit overrides if importing from `21600933.v1` or `21600933.v5`).
+  - **GlyCadence Provenance Pinning:** `ingest_shanghai_t2dm()` and `ingest_shanghai_t2dm_archive()` default to pinning `dataset_version = 'figshare-item-20444397-v1'`, `dataset_doi = '10.6084/m9.figshare.20444397.v1'`, `source_url = 'https://ndownloader.figshare.com/files/36582306'`, `license_identifier = 'CC BY 4.0'`, and `license_url = 'https://creativecommons.org/licenses/by/4.0/'` (and accept explicit overrides when importing `10.6084/m9.figshare.20444397.v3`).
 
 ### Cohort, Sampling & Timezone Basis Semantics
-- **Participants:** 100 Type 2 Diabetes Mellitus (`diabetes_type = 'T2D'`) patients in Shanghai, China (`Shanghai_T2DM/` directory + `Shanghai_T2DM_Summary.xlsx`). Any `ShanghaiT1DM` (`T1D`) records are strictly rejected (`t1d_cohort_mixing_forbidden`).
+- **Participants:** 86 T2D participants (90 admissions) in v1 (`Diabetes_dataset.zip`) and 100 T2D participants (109 admissions) in v3 (`data.zip`). Any `ShanghaiT1DM` (`T1D`) records are strictly rejected (`t1d_cohort_mixing_forbidden`).
 - **Primary CGM Sensor:** Abbott **FreeStyle Libre H** (`device_id = 'FreeStyle_Libre_H'`, `sampling_interval_min = 15`).
-- **Observation Provenance:** `observation_provenance = 'native'` when `source_verified_native_export=True` (verified ShanghaiT2DM clinical workbooks recording direct 15-minute FreeStyle Libre H sensor reads) or when explicitly tagged on the row; otherwise `'unknown'`.
-- **Timestamp Semantics & Timezone Basis (`timezone_basis`):**
-  - Raw ShanghaiT2DM spreadsheet `Date` cells are naive local timestamps (e.g., `2021-09-13 08:00:00`) without an embedded UTC offset string.
-  - Rather than claiming `UTC+08:00` is source-confirmed in the cell text, GlyCadence parses naive ShanghaiT2DM timestamps using IANA timezone `ZoneInfo("Asia/Shanghai")`, preserves the verbatim string in `raw_timestamp`, sets `timestamp_semantics = 'real_world_local'`, and records **`timezone_basis = 'assumed_study_location'`**.
-  - Only timestamps that carry an explicit offset in the source string (e.g., `+08:00`) receive `timezone_basis = 'source_confirmed'`. If `assumed_iana_tz=None` is passed for a naive timestamp, `timezone_basis = 'unknown'` is recorded.
-  - Analytics computed over records with `timezone_basis IN ('assumed_study_location', 'unknown')` automatically append an explicit uncertainty note to `uncertainty_notes`.
+- **Observation Provenance:** `observation_provenance` defaults to `'unknown'` (`source_verified_native_export=False` by default). Setting `source_verified_native_export=True` requires a non-empty `native_evidence_reference` citation stored in `dataset_imports.quality_report_summary["native_evidence_reference"]` and `audit_logs`. CBG (`reading_type = 'cbg'`) rows are never stamped as `'native'` CGM.
+- **Timestamp Semantics & Timezone Basis (`timezone_basis`) — Sources Checked:**
+  - We inspected three primary sources for explicit timezone documentation:
+    1. **Dataset Paper (Zhao et al., *Scientific Data* 10, 35, 2023, `10.1038/s41597-023-01940-7`):** States that clinical recruitment and CGM monitoring took place at Shanghai Sixth People's Hospital and Shanghai Fourth People's Hospital (Shanghai, China) and documents the timestamp column format (`YYYY:MM:DD hh:mm:ss`) without stating an explicit UTC offset or IANA timezone string.
+    2. **Figshare Metadata (`docs/provenance/figshare_20444397_v1.json` & `v3.json`):** The `description` field states `<p>These two datasets from Type 1 Diabetes and Type 2 Diabetes patients in Shanghai, China.</p>` and contains no timezone field.
+    3. **Workbook & CSV Headers/Cells (`ShanghaiT2DM/*.csv` and `Shanghai_T2DM/*.xls*`):** Column headers (`time`, `record time`, `Date`) and cell values (`2021/4/20 11:33`, `2020-12-30 13:54:00`) are naive local timestamps with no embedded UTC offset.
+  - Because the timezone is inferred from the hospital study location (`Shanghai, China`) rather than explicitly encoded in the timestamps or data dictionary, GlyCadence parses naive ShanghaiT2DM timestamps using `ZoneInfo("Asia/Shanghai")` (`UTC+08:00`), preserves the verbatim string in `raw_timestamp`, sets `timestamp_semantics = 'real_world_local'`, and records **`timezone_basis = 'assumed_study_location'`**.
+  - Only timestamps carrying an explicit offset in the source string (e.g., `+08:00`) receive `timezone_basis = 'source_confirmed'`.
 
-### Medication Provenance & Deduplication Rules (`ShanghaiT2DM`)
-1. **Static Summary Regimens (`Shanghai_T2DM_Summary.xlsx`):** Medication columns in the summary table (`Hypoglycemic Agents`, `Insulin`) describe baseline prescribed regimens only. They create `medications` regimen rows and **never** generate `medication_events`.
-2. **Timestamped Clinical Notations (`Shanghai_T2DM/*.xlsx`):**
-   - `medication_events` (`status = 'unknown'`, `event_source = 'clinical_record'`) are created **only** when a specific time-series row contains a non-empty medication notation at that timestamp, preserving `source_sheet`, `source_cell_ref`, `recorded_at`, and exact `notes` text (`taken` or `missed` is never inferred).
-   - **Fill-Down Suppression vs. Genuine Separate Administrations:**
-     - Spreadsheet fill-down artifacts — rows explicitly flagged `is_fill_down = True` or identical medication text repeated across immediately contiguous 15-minute CGM rows ($\Delta t \le 15\text{ min}$) within the same sheet — are suppressed so copied cells do not fabricate duplicate `unknown` events.
-     - Genuine separate timestamped administrations on the same day or across days (for example, morning `08:00` `"Metformin 0.5g"` and evening `20:00` `"Metformin 0.5g"`, where $\Delta t > 15\text{ min}$ or `is_fill_down = False`) are **both preserved** as distinct `MedicationEvent` rows with their respective timestamps, `source_sheet`, and `source_cell_ref`.
+### Medication Provenance Rules (`ShanghaiT2DM`)
+1. **Static Summary Regimens (`ShanghaiT2DM.xlsx` / `Shanghai_T2DM_Summary.xlsx`):** Medication columns in the summary table (`Diabetes medication`, `Hypoglycemic Agents`, `Insulin`) describe baseline prescribed regimens only. They create `medications` regimen rows and **never** generate `medication_events`.
+2. **Timestamped Clinical Notations (`ShanghaiT2DM/*.csv` / `Shanghai_T2DM/*.xls*`):**
+   - `medication_events` (`status = 'unknown'`, `event_source = 'clinical_record'`) are created for every non-empty time-series medication cell at that row's timestamp (`taken` or `missed` is never inferred).
+   - **Real Sheet & Cell Provenance (No Fabricated References):**
+     - When ingested from an Excel workbook (`.xlsx` / `.xls`), all sheets in the workbook are read (`pd.read_excel(path, sheet_name=None)`), recording the real Excel sheet name in `source_sheet` and the real 1-based Excel cell coordinate (e.g. `G14`, `H22`) in `source_cell_ref`.
+     - When ingested from a CSV file or in-memory dict where no sheet name or cell reference exists, `source_sheet` and `source_cell_ref` are stored as `NULL` (`None`) — never fabricated as `_Sheet1` or `G{idx+2}`.
+   - **Real-Archive Inspection of Fill-Down:** Inspection of all 109 workbooks in `data.zip` (4,372 medication rows) and all 90 CSVs in `Diabetes_dataset.zip` confirmed `0` contiguous fill-down rows; every non-empty medication row in the archive is a distinct timestamped clinical notation and is preserved without heuristic suppression.
 
 ---
 

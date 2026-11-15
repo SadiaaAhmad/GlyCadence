@@ -1,9 +1,11 @@
 from datetime import datetime, timezone
 from pathlib import Path
+import tempfile
 from typing import Any
+import uuid
 
 import pandas as pd
-from sqlalchemy import select
+from sqlalchemy import insert, select
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_audit_event
@@ -13,6 +15,8 @@ from app.ingestion.common import (
     ObservationProvenanceType,
     RejectionTracker,
     compute_input_payload_checksum,
+    compute_source_file_checksum,
+    extract_zip_safely,
     is_missing_value,
     normalize_glucose_reading,
     parse_timestamp_with_semantics,
@@ -76,7 +80,11 @@ def _load_tabular(source: Path | pd.DataFrame | list[dict[str, Any]]) -> list[di
     if suffix == ".csv":
         return pd.read_csv(path).to_dict(orient="records")
     if suffix in {".xlsx", ".xls"}:
-        return pd.read_excel(path).to_dict(orient="records")
+        sheets = pd.read_excel(path, sheet_name=None)
+        rows: list[dict[str, Any]] = []
+        for df in sheets.values():
+            rows.extend(df.to_dict(orient="records"))
+        return rows
     raise ValueError(f"Unsupported CGMacros file format: {suffix}")
 
 
@@ -192,6 +200,7 @@ def ingest_cgmacros(
     source_verified_native_export: bool = False,
     native_evidence_reference: str | None = None,
     participant_consent_version: str | None = None,
+    extra_quality_metadata: dict[str, Any] | None = None,
 ) -> IngestionSummary:
     """Ingest CGMacros dataset with DOI 10.13026/3z8q-x658, CC BY-NC-SA 4.0 licensing,
     date_shifted_relative semantics, and strict observation provenance tracking.
@@ -288,26 +297,42 @@ def ingest_cgmacros(
             s = str(raw_sex).strip().lower()
             sex_val = "female" if s in {"f", "female"} else ("male" if s in {"m", "male"} else s[:32])
 
-        raw_weight = _extract_col(brow, ("body weight", "weight_kg", "weight"))
+        raw_weight_kg = _extract_col(brow, ("weight_kg",))
+        raw_weight_lb = _extract_col(brow, ("body weight", "weight"))
         weight_kg: float | None = None
-        if not is_missing_value(raw_weight):
+        if not is_missing_value(raw_weight_kg):
             try:
-                w = float(raw_weight)
+                weight_kg = round(float(raw_weight_kg), 1)
+            except (TypeError, ValueError):
+                pass
+        elif not is_missing_value(raw_weight_lb):
+            try:
+                w = float(raw_weight_lb)
                 w_unit = _extract_col(brow, ("weight_unit",))
-                if not is_missing_value(w_unit) and str(w_unit).strip().lower() in {"lb", "lbs"}:
-                    weight_kg = round(w * 0.45359237, 1)
-                else:
+                if not is_missing_value(w_unit) and str(w_unit).strip().lower() in {"kg", "kilograms"}:
                     weight_kg = round(w, 1)
+                else:
+                    # DataDictionary_Bio.csv specifies 'Body weight' is in pounds (lbs)
+                    weight_kg = round(w * 0.45359237, 1)
             except (TypeError, ValueError):
                 pass
 
-        raw_height = _extract_col(brow, ("height", "height_cm"))
+        raw_height_cm = _extract_col(brow, ("height_cm",))
+        raw_height_in = _extract_col(brow, ("height",))
         height_cm: float | None = None
-        if not is_missing_value(raw_height):
+        if not is_missing_value(raw_height_cm):
             try:
-                h = float(raw_height)
+                height_cm = round(float(raw_height_cm), 1)
+            except (TypeError, ValueError):
+                pass
+        elif not is_missing_value(raw_height_in):
+            try:
+                h = float(raw_height_in)
                 h_unit = _extract_col(brow, ("height_unit",))
-                if not is_missing_value(h_unit) and str(h_unit).strip().lower() in {"in", "inch", "inches"}:
+                if not is_missing_value(h_unit) and str(h_unit).strip().lower() in {"cm", "centimeters"}:
+                    height_cm = round(h, 1)
+                elif h < 100.0:
+                    # DataDictionary_Bio.csv specifies 'Height' is in inches (59-72 in)
                     height_cm = round(h * 2.54, 1)
                 else:
                     height_cm = round(h, 1)
@@ -388,6 +413,10 @@ def ingest_cgmacros(
             ).all()
         )
 
+        glucose_batch: list[dict[str, Any]] = []
+        activity_batch: list[dict[str, Any]] = []
+        now_utc = datetime.now(timezone.utc)
+
         for idx, ts_utc, raw_ts_str, tz_basis, row in parsed_rows:
             rec_id = f"{ext_id}:row_{idx}"
             raw_unit_col = _extract_col(row, ("unit", "raw_unit"))
@@ -413,25 +442,28 @@ def ingest_cgmacros(
                             source_verified_native_export=source_verified_native_export,
                         )
                         provenance_counts[prov] = provenance_counts.get(prov, 0) + 1
-                        db.add(
-                            GlucoseReading(
-                                patient_id=patient.id,
-                                cohort_type="research_participant",
-                                dataset_import_id=dataset_import.id,
-                                recorded_at=ts_utc,
-                                raw_timestamp=raw_ts_str,
-                                timestamp_semantics="date_shifted_relative",
-                                timezone_basis=tz_basis,
-                                glucose_mg_dl=g_mg_dl,
-                                raw_value=g_raw,
-                                raw_unit=g_unit,
-                                reading_type="cgm",
-                                device_id=LIBRE_PRO_DEVICE,
-                                sampling_interval_min=LIBRE_SAMPLING_MIN,
-                                observation_provenance=prov,
-                                source_dataset=DATASET_NAME,
-                                source_record_id=f"{rec_id}:libre",
-                            )
+                        glucose_batch.append(
+                            {
+                                "id": uuid.uuid4(),
+                                "patient_id": patient.id,
+                                "cohort_type": "research_participant",
+                                "dataset_import_id": dataset_import.id,
+                                "recorded_at": ts_utc,
+                                "raw_timestamp": raw_ts_str,
+                                "timestamp_semantics": "date_shifted_relative",
+                                "timezone_basis": tz_basis,
+                                "glucose_mg_dl": g_mg_dl,
+                                "raw_value": g_raw,
+                                "raw_unit": g_unit,
+                                "reading_type": "cgm",
+                                "device_id": LIBRE_PRO_DEVICE,
+                                "sampling_interval_min": LIBRE_SAMPLING_MIN,
+                                "observation_provenance": prov,
+                                "is_flagged": False,
+                                "source_dataset": DATASET_NAME,
+                                "source_record_id": f"{rec_id}:libre",
+                                "created_at": now_utc,
+                            }
                         )
                         tracker.accept()
                 except ValueError as err:
@@ -461,25 +493,28 @@ def ingest_cgmacros(
                             source_verified_native_export=source_verified_native_export,
                         )
                         provenance_counts[prov] = provenance_counts.get(prov, 0) + 1
-                        db.add(
-                            GlucoseReading(
-                                patient_id=patient.id,
-                                cohort_type="research_participant",
-                                dataset_import_id=dataset_import.id,
-                                recorded_at=ts_utc,
-                                raw_timestamp=raw_ts_str,
-                                timestamp_semantics="date_shifted_relative",
-                                timezone_basis=tz_basis,
-                                glucose_mg_dl=g_mg_dl,
-                                raw_value=g_raw,
-                                raw_unit=g_unit,
-                                reading_type="cgm",
-                                device_id=DEXCOM_G6_PRO_DEVICE,
-                                sampling_interval_min=DEXCOM_SAMPLING_MIN,
-                                observation_provenance=prov,
-                                source_dataset=DATASET_NAME,
-                                source_record_id=f"{rec_id}:dexcom",
-                            )
+                        glucose_batch.append(
+                            {
+                                "id": uuid.uuid4(),
+                                "patient_id": patient.id,
+                                "cohort_type": "research_participant",
+                                "dataset_import_id": dataset_import.id,
+                                "recorded_at": ts_utc,
+                                "raw_timestamp": raw_ts_str,
+                                "timestamp_semantics": "date_shifted_relative",
+                                "timezone_basis": tz_basis,
+                                "glucose_mg_dl": g_mg_dl,
+                                "raw_value": g_raw,
+                                "raw_unit": g_unit,
+                                "reading_type": "cgm",
+                                "device_id": DEXCOM_G6_PRO_DEVICE,
+                                "sampling_interval_min": DEXCOM_SAMPLING_MIN,
+                                "observation_provenance": prov,
+                                "is_flagged": False,
+                                "source_dataset": DATASET_NAME,
+                                "source_record_id": f"{rec_id}:dexcom",
+                                "created_at": now_utc,
+                            }
                         )
                         tracker.accept()
                 except ValueError as err:
@@ -539,42 +574,58 @@ def ingest_cgmacros(
                 try:
                     hr_val = float(hr_raw) if not is_missing_value(hr_raw) else None
                     steps_val = int(float(steps_raw)) if not is_missing_value(steps_raw) else None
-                    db.add(
-                        ActivityRecord(
-                            patient_id=patient.id,
-                            cohort_type="research_participant",
-                            recorded_at=ts_utc,
-                            steps=steps_val,
-                            heart_rate_bpm=hr_val,
-                            intensity="unknown",
-                            source_dataset=DATASET_NAME,
-                            source_record_id=f"{rec_id}:activity",
+                    if hr_val is not None and not (20.0 <= hr_val <= 260.0):
+                        hr_val = None
+                    if steps_val is not None and steps_val < 0:
+                        steps_val = None
+                    if hr_val is not None or steps_val is not None:
+                        activity_batch.append(
+                            {
+                                "id": uuid.uuid4(),
+                                "patient_id": patient.id,
+                                "cohort_type": "research_participant",
+                                "recorded_at": ts_utc,
+                                "steps": steps_val,
+                                "heart_rate_bpm": hr_val,
+                                "active_minutes": None,
+                                "intensity": "unknown",
+                                "source_dataset": DATASET_NAME,
+                                "source_record_id": f"{rec_id}:activity",
+                                "created_at": now_utc,
+                            }
                         )
-                    )
-                    tracker.accept()
+                        tracker.accept()
                 except (TypeError, ValueError):
                     pass
+
+        for start_i in range(0, len(glucose_batch), 5000):
+            db.execute(insert(GlucoseReading), glucose_batch[start_i : start_i + 5000])
+        for start_i in range(0, len(activity_batch), 5000):
+            db.execute(insert(ActivityRecord), activity_batch[start_i : start_i + 5000])
+        db.flush()
+
+    extra_info: dict[str, Any] = {
+        "participants_ingested": participants_ingested,
+        "excluded_non_t2d_participants": excluded_non_t2d,
+        "t2d_only": t2d_only,
+        "dataset_doi": dataset_doi,
+        "source_url": source_url,
+        "license_identifier": LICENSE_IDENTIFIER,
+        "license_url": LICENSE_URL,
+        "timestamp_semantics": "date_shifted_relative",
+        "timezone_basis": "not_applicable_relative",
+        "source_verified_native_export": source_verified_native_export,
+        "native_evidence_reference": cleaned_evidence_ref,
+        "observation_provenance_counts": provenance_counts,
+    }
+    if extra_quality_metadata:
+        extra_info.update(extra_quality_metadata)
 
     dataset_import.status = "completed"
     dataset_import.records_accepted = tracker.accepted_count
     dataset_import.records_rejected = tracker.rejected_count
     dataset_import.completed_at = datetime.now(timezone.utc)
-    dataset_import.quality_report_summary = tracker.to_quality_report(
-        extra={
-            "participants_ingested": participants_ingested,
-            "excluded_non_t2d_participants": excluded_non_t2d,
-            "t2d_only": t2d_only,
-            "dataset_doi": dataset_doi,
-            "source_url": source_url,
-            "license_identifier": LICENSE_IDENTIFIER,
-            "license_url": LICENSE_URL,
-            "timestamp_semantics": "date_shifted_relative",
-            "timezone_basis": "not_applicable_relative",
-            "source_verified_native_export": source_verified_native_export,
-            "native_evidence_reference": cleaned_evidence_ref,
-            "observation_provenance_counts": provenance_counts,
-        }
-    )
+    dataset_import.quality_report_summary = tracker.to_quality_report(extra=extra_info)
     record_audit_event(
         db,
         action="create_log",
@@ -612,3 +663,59 @@ def ingest_cgmacros(
         timestamp_semantics="date_shifted_relative",
         timezone_basis="not_applicable_relative",
     )
+
+
+def ingest_cgmacros_archive(
+    db: Session,
+    archive_path: Path | str,
+    *,
+    t2d_only: bool = True,
+    dataset_version: str = DEFAULT_DATASET_VERSION,
+    dataset_doi: str = DEFAULT_DATASET_DOI,
+    source_url: str = DEFAULT_SOURCE_URL,
+    source_verified_native_export: bool = False,
+    native_evidence_reference: str | None = None,
+) -> IngestionSummary:
+    """Safely extract a CGMacros ZIP archive and ingest bio.csv and participant CSVs."""
+    arch = Path(archive_path)
+    archive_sha256 = compute_source_file_checksum(arch)
+    with tempfile.TemporaryDirectory(prefix="glycadence_cgmacros_") as tmp_dir:
+        extracted_files = extract_zip_safely(arch, tmp_dir)
+        tmp_root = Path(tmp_dir).resolve()
+
+        bio_file: Path | None = None
+        participant_files: dict[str, Path] = {}
+        member_sha256: dict[str, str] = {}
+
+        for fpath in sorted(extracted_files):
+            rel = fpath.relative_to(tmp_root).as_posix()
+            f_hash = compute_source_file_checksum(fpath)
+            if f_hash:
+                member_sha256[rel] = f_hash
+
+            low_name = fpath.name.lower()
+            if low_name == "bio.csv":
+                bio_file = fpath
+            elif low_name.startswith("cgmacros-") and low_name.endswith(".csv"):
+                participant_files[fpath.stem] = fpath
+
+        if bio_file is None:
+            raise ValueError(f"bio.csv not found in CGMacros archive: {arch}")
+
+        return ingest_cgmacros(
+            db,
+            bio_source=bio_file,
+            participant_sources=participant_files,
+            source_file_path=arch,
+            t2d_only=t2d_only,
+            dataset_version=dataset_version,
+            dataset_doi=dataset_doi,
+            source_url=source_url,
+            source_verified_native_export=source_verified_native_export,
+            native_evidence_reference=native_evidence_reference,
+            extra_quality_metadata={
+                "archive_sha256": archive_sha256,
+                "archive_member_count": len(member_sha256),
+                "archive_member_sha256": member_sha256,
+            },
+        )

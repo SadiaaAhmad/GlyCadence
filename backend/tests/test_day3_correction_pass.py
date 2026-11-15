@@ -592,3 +592,137 @@ def test_group_c_iauc_anchor_gap_chain_and_boundary_cases():
     assert "insufficient_post_meal_window_span_lt_120m" in res_119.rejection_reasons
 
 
+# ---------------------------------------------------------------------------
+# Group D — Archive ingestion, no fabricated sheet/cell refs, multi-sheet,
+#           zip-slip protection, and compute_sha256 nonexistent path check
+# ---------------------------------------------------------------------------
+def test_group_d_sha256_nonexistent_dict_null_refs_multisheet_and_zip_slip(tmp_path):
+    from pathlib import Path
+    import zipfile
+    import pandas as pd
+    from app.ingestion.common import compute_sha256
+    from app.models import MedicationEvent
+
+    # 1. compute_sha256(Path("nonexistent")) MUST raise ValueError (not hash the path string)
+    with pytest.raises(ValueError, match="does not exist"):
+        compute_sha256(Path(tmp_path / "nonexistent_file_xyz.csv"))
+
+    # 2. Dict input without source_sheet / source_cell_ref stores None (never fabricated _Sheet1 or G2/H2),
+    #    and adjacent identical medication rows are preserved (no synthetic is_fill_down heuristic)
+    engine = get_engine()
+    conn = engine.connect()
+    outer_tx = conn.begin()
+    db = Session(bind=conn, join_transaction_mode="create_savepoint")
+    try:
+        rows_dict = [
+            {
+                "Date": "2023-06-01 08:00:00",
+                "CGM (mg / dl)": 130.0,
+                "Non-insulin hypoglycemic agents": "Metformin 0.5g",
+            },
+            {
+                "Date": "2023-06-01 08:15:00",
+                "CGM (mg / dl)": 135.0,
+                "Non-insulin hypoglycemic agents": "Metformin 0.5g",
+            },
+        ]
+        ingest_shanghai_t2dm(
+            db,
+            participant_sources={"9201": rows_dict},
+        )
+        p_dict = db.scalar(
+            select(Patient).where(
+                Patient.cohort_type == "research_participant",
+                Patient.source_dataset == "shanghai_t2dm",
+                Patient.external_id == "9201",
+            )
+        )
+        assert p_dict is not None
+        med_events_dict = list(
+            db.scalars(
+                select(MedicationEvent)
+                .where(MedicationEvent.patient_id == p_dict.id)
+                .order_by(MedicationEvent.event_time.asc())
+            ).all()
+        )
+        assert len(med_events_dict) == 2
+        assert med_events_dict[0].source_sheet is None
+        assert med_events_dict[0].source_cell_ref is None
+        assert med_events_dict[1].source_sheet is None
+        assert med_events_dict[1].source_cell_ref is None
+
+        # 3. Multi-sheet Excel workbook ingests ALL sheets and records real sheet names
+        #    and real 1-based Excel cell references (column C here, NOT hardcoded G!)
+        wb_path = tmp_path / "9202_multisheet.xlsx"
+        df_sheet_a = pd.DataFrame(
+            [
+                {
+                    "Date": "2023-06-02 08:00:00",
+                    "CGM (mg / dl)": 120.0,
+                    "Non-insulin hypoglycemic agents": "Acarbose 50mg",
+                }
+            ]
+        )
+        df_sheet_b = pd.DataFrame(
+            [
+                {
+                    "Date": "2023-06-03 09:00:00",
+                    "CGM (mg / dl)": 142.0,
+                    "Non-insulin hypoglycemic agents": "Acarbose 50mg",
+                }
+            ]
+        )
+        with pd.ExcelWriter(wb_path, engine="openpyxl") as writer:
+            df_sheet_a.to_excel(writer, sheet_name="Admission_Part1", index=False)
+            df_sheet_b.to_excel(writer, sheet_name="Admission_Part2", index=False)
+
+        ingest_shanghai_t2dm(
+            db,
+            participant_sources={"9202": wb_path},
+        )
+        p_wb = db.scalar(
+            select(Patient).where(
+                Patient.cohort_type == "research_participant",
+                Patient.source_dataset == "shanghai_t2dm",
+                Patient.external_id == "9202",
+            )
+        )
+        assert p_wb is not None
+        wb_readings = list(
+            db.scalars(
+                select(GlucoseReading)
+                .where(GlucoseReading.patient_id == p_wb.id)
+                .order_by(GlucoseReading.recorded_at.asc())
+            ).all()
+        )
+        assert len(wb_readings) == 2
+        wb_med_events = list(
+            db.scalars(
+                select(MedicationEvent)
+                .where(MedicationEvent.patient_id == p_wb.id)
+                .order_by(MedicationEvent.event_time.asc())
+            ).all()
+        )
+        assert len(wb_med_events) == 2
+        assert wb_med_events[0].source_sheet == "Admission_Part1"
+        assert wb_med_events[0].source_cell_ref == "C2"
+        assert wb_med_events[1].source_sheet == "Admission_Part2"
+        assert wb_med_events[1].source_cell_ref == "C2"
+
+        # 4. Zip-slip entry (../../evil.xlsx) is rejected before extraction
+        from app.ingestion.common import extract_zip_safely
+
+        evil_zip = tmp_path / "evil.zip"
+        with zipfile.ZipFile(evil_zip, "w") as zf:
+            zf.writestr("../../evil.xlsx", b"malicious-bytes")
+
+        extract_dest = tmp_path / "extracted"
+        with pytest.raises(ValueError, match="zip_slip"):
+            extract_zip_safely(evil_zip, extract_dest)
+    finally:
+        db.close()
+        outer_tx.rollback()
+        conn.close()
+
+
+
