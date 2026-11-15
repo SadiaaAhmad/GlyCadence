@@ -6,6 +6,7 @@ import numpy as np
 from app.analytics.baselines import (
     GlucosePoint,
     filter_and_count_provenance,
+    filter_cgm_only,
     prepare_glucose_points,
 )
 from app.analytics.data_quality import compute_cgm_coverage, compute_deterministic_confidence
@@ -37,14 +38,28 @@ def compute_glucose_drift(
     """
     all_points = prepare_glucose_points(readings)
     sem_list = sorted({p.timestamp_semantics for p in all_points}) if all_points else ["utc_exact"]
+    cgm_points, excluded_non_cgm = filter_cgm_only(all_points)
     points, prov_counts, excluded_non_native = filter_and_count_provenance(
-        all_points, native_only=native_only
+        cgm_points, native_only=native_only
     )
+    filter_mode = "native_only" if native_only else "include_non_native"
     n = len(points)
     if n < 10:
         now = datetime.now(timezone.utc)
         w_start = points[0].recorded_at if points else now
         w_end = points[-1].recorded_at if points else now
+        insuff_notes = [
+            "Fewer than 10 verified native glucose readings available; exploratory drift comparison skipped.",
+            SERIAL_CORRELATION_DISCLAIMER,
+        ]
+        if excluded_non_cgm > 0:
+            insuff_notes.append(
+                f"Excluded {excluded_non_cgm} non-CGM reading(s) (e.g., cbg/fasting/pre_meal finger-stick observations) from CGM analytics."
+            )
+        if excluded_non_native > 0:
+            insuff_notes.append(
+                f"Excluded {excluded_non_native} reading(s) with non-native provenance from native-cadence CGM drift analysis."
+            )
         return DriftSummaryOut(
             window_start=w_start,
             window_end=w_end,
@@ -53,12 +68,14 @@ def compute_glucose_drift(
             status="insufficient_data",
             baseline_observation_count=0,
             recent_observation_count=0,
+            excluded_non_native_count=excluded_non_native,
+            excluded_non_cgm_count=excluded_non_cgm,
+            native_only=native_only,
+            include_non_native=not native_only,
+            provenance_filter_mode=filter_mode,
             statistical_note=SERIAL_CORRELATION_DISCLAIMER,
             deterministic_confidence=0.0,
-            uncertainty_notes=[
-                "Fewer than 10 verified native glucose readings available; exploratory drift comparison skipped.",
-                SERIAL_CORRELATION_DISCLAIMER,
-            ],
+            uncertainty_notes=insuff_notes,
             evidence=None,
         )
 
@@ -95,6 +112,8 @@ def compute_glucose_drift(
         sampling_intervals=[p.sampling_interval_min for p in points],
         provenance_counts=prov_counts,
         excluded_non_native_count=excluded_non_native,
+        excluded_non_cgm_count=excluded_non_cgm,
+        native_only=native_only,
         timestamp_semantics=sem_list,
     )
 
@@ -146,6 +165,11 @@ def compute_glucose_drift(
         recent_window_end=recent_pts[-1].recorded_at,
         baseline_observation_count=len(baseline_pts),
         recent_observation_count=len(recent_pts),
+        excluded_non_native_count=excluded_non_native,
+        excluded_non_cgm_count=excluded_non_cgm,
+        native_only=native_only,
+        include_non_native=not native_only,
+        provenance_filter_mode=filter_mode,
         baseline_coverage_pct=base_cov.period_coverage_pct,
         recent_coverage_pct=rec_cov.period_coverage_pct,
         baseline_mean_mg_dl=base_mean,

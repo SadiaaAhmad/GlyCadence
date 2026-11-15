@@ -25,6 +25,7 @@ class GlucoseCreate(BaseModel):
     reading_type: Literal["cgm", "fasting", "pre_meal", "post_meal", "bedtime", "cbg"]
     device_id: str | None = Field(default=None, max_length=64)
     sampling_interval_min: int | None = Field(default=None, ge=1, le=1440)
+    observation_provenance: Literal["native", "interpolated", "derived", "unknown"] | None = None
 
     @field_validator("recorded_at")
     @classmethod
@@ -43,6 +44,7 @@ class GlucoseOut(BaseModel):
     reading_type: str
     device_id: str | None
     sampling_interval_min: int | None
+    observation_provenance: str
     source_dataset: str
 
     model_config = {"from_attributes": True}

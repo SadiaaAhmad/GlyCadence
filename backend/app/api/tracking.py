@@ -77,6 +77,22 @@ def create_glucose_reading(
     glucose_mg_dl = (
         payload.raw_value if payload.raw_unit == "mg/dL" else round(payload.raw_value * 18.0182, 2)
     )
+    # Explicit provenance for manual user entries ("as entered by the user, not interpolated"):
+    # Non-CGM point readings (fasting, pre_meal, post_meal, bedtime, cbg) are never native CGM.
+    # For manual CGM entries, 'native' denotes "as entered directly by the user, not interpolated".
+    if payload.reading_type == "cgm":
+        explicit_provenance = payload.observation_provenance or "native"
+    else:
+        if payload.observation_provenance == "native":
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "non_cgm_cannot_be_native_cgm",
+                    "message": "Non-CGM point readings cannot be marked as native CGM.",
+                },
+            )
+        explicit_provenance = payload.observation_provenance or "unknown"
+
     row = GlucoseReading(
         patient_id=patient.id,
         cohort_type=patient.cohort_type,
@@ -87,6 +103,7 @@ def create_glucose_reading(
         reading_type=payload.reading_type,
         device_id=payload.device_id,
         sampling_interval_min=payload.sampling_interval_min,
+        observation_provenance=explicit_provenance,
         source_dataset="app_user",
         idempotency_key=idempotency_key,
     )

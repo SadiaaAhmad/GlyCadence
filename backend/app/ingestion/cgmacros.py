@@ -6,6 +6,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.audit import record_audit_event
 from app.ingestion.common import (
     PREPROCESSING_VERSION,
     IngestionSummary,
@@ -189,6 +190,7 @@ def ingest_cgmacros(
     source_url: str = DEFAULT_SOURCE_URL,
     preprocessing_version: str = PREPROCESSING_VERSION,
     source_verified_native_export: bool = False,
+    native_evidence_reference: str | None = None,
     participant_consent_version: str | None = None,
 ) -> IngestionSummary:
     """Ingest CGMacros dataset with DOI 10.13026/3z8q-x658, CC BY-NC-SA 4.0 licensing,
@@ -205,6 +207,15 @@ def ingest_cgmacros(
     - Does NOT classify a reading as ``native`` merely because its interval matches nominal sensor
       cadence (5 min or 15 min). Regularly spaced but unverified readings remain ``unknown``.
     """
+    if source_verified_native_export and (
+        native_evidence_reference is None or not str(native_evidence_reference).strip()
+    ):
+        raise ValueError(
+            "native_evidence_reference is required when source_verified_native_export=True"
+        )
+    cleaned_evidence_ref = (
+        str(native_evidence_reference).strip() if native_evidence_reference else None
+    )
     tracker = RejectionTracker()
     source_file_checksum, directory_manifest_checksum, input_payload_checksum = _resolve_checksums(
         bio_source, participant_sources, source_file_path
@@ -559,8 +570,23 @@ def ingest_cgmacros(
             "license_url": LICENSE_URL,
             "timestamp_semantics": "date_shifted_relative",
             "timezone_basis": "not_applicable_relative",
+            "source_verified_native_export": source_verified_native_export,
+            "native_evidence_reference": cleaned_evidence_ref,
             "observation_provenance_counts": provenance_counts,
         }
+    )
+    record_audit_event(
+        db,
+        action="create_log",
+        resource_type="dataset_import",
+        resource_id=str(dataset_import.id),
+        context_metadata={
+            "dataset_name": DATASET_NAME,
+            "dataset_version": dataset_version,
+            "dataset_doi": dataset_doi,
+            "source_verified_native_export": source_verified_native_export,
+            "native_evidence_reference": cleaned_evidence_ref,
+        },
     )
     db.commit()
 

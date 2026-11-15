@@ -136,7 +136,7 @@ def test_meal_response_iauc_manual_reference_and_boundary_rejections():
 
     # Boundary Failure 1: Missing pre-meal anchor in [-30m, 0m]
     no_anchor_readings = [
-        {"id": "g-too-early", "recorded_at": meal_ts - timedelta(minutes=35), "glucose_mg_dl": 100.0, "source_dataset": "cgmacros"},
+        {"id": "g-too-early", "recorded_at": meal_ts - timedelta(minutes=35), "glucose_mg_dl": 100.0, "source_dataset": "cgmacros", "observation_provenance": "native"},
         *valid_readings[2:],
     ]
     res_no_anchor = evaluate_single_meal_response(
@@ -170,7 +170,7 @@ def test_meal_response_iauc_manual_reference_and_boundary_rejections():
     short_span_readings = [
         valid_readings[1],
         *[
-            {"id": f"s-{m}", "recorded_at": meal_ts + timedelta(minutes=m), "glucose_mg_dl": 135.0, "source_dataset": "cgmacros"}
+            {"id": f"s-{m}", "recorded_at": meal_ts + timedelta(minutes=m), "glucose_mg_dl": 135.0, "source_dataset": "cgmacros", "observation_provenance": "native"}
             for m in (15, 30, 45, 60, 90)
         ],
     ]
@@ -190,7 +190,7 @@ def test_meal_response_iauc_manual_reference_and_boundary_rejections():
     gap_readings = [
         valid_readings[1],
         *[
-            {"id": f"gap-{m}", "recorded_at": meal_ts + timedelta(minutes=m), "glucose_mg_dl": 140.0, "source_dataset": "cgmacros"}
+            {"id": f"gap-{m}", "recorded_at": meal_ts + timedelta(minutes=m), "glucose_mg_dl": 140.0, "source_dataset": "cgmacros", "observation_provenance": "native"}
             for m in (35, 60, 85, 110, 130)
         ],
     ]
@@ -250,13 +250,13 @@ def test_missingness_daily_vs_period_coverage_and_duplicate_out_of_order_handlin
     ]
 
     combined_readings = [
-        {"id": f"d2-{i}", "recorded_at": ts, "glucose_mg_dl": 130.0, "source_dataset": "shanghai_t2dm", "sampling_interval_min": 15}
+        {"id": f"d2-{i}", "recorded_at": ts, "glucose_mg_dl": 130.0, "source_dataset": "shanghai_t2dm", "sampling_interval_min": 15, "observation_provenance": "native"}
         for i, ts in enumerate(reversed(day2_ts))
     ] + [
-        {"id": f"d1-{i}", "recorded_at": ts, "glucose_mg_dl": 110.0, "source_dataset": "shanghai_t2dm", "sampling_interval_min": 15}
+        {"id": f"d1-{i}", "recorded_at": ts, "glucose_mg_dl": 110.0, "source_dataset": "shanghai_t2dm", "sampling_interval_min": 15, "observation_provenance": "native"}
         for i, ts in enumerate(day1_ts)
     ] + [
-        {"id": "dup-0", "recorded_at": day1_ts[0], "glucose_mg_dl": 999.0, "source_dataset": "shanghai_t2dm", "sampling_interval_min": 15}
+        {"id": "dup-0", "recorded_at": day1_ts[0], "glucose_mg_dl": 999.0, "source_dataset": "shanghai_t2dm", "sampling_interval_min": 15, "observation_provenance": "native"}
     ]
 
     summary = compute_glucose_summary(combined_readings)
@@ -469,7 +469,8 @@ def test_shanghai_t2dm_cgmacros_provenance_consent_immutability_and_medication_d
         assert st_report.input_payload_checksum is not None
         assert len(st_report.input_payload_checksum) == 64
         assert st_report.participants_ingested == 1
-        assert st_report.observation_provenance_counts["native"] == 5  # 4 CGM + 1 CBG
+        assert st_report.observation_provenance_counts["native"] == 0
+        assert st_report.observation_provenance_counts["unknown"] == 5  # 4 CGM + 1 CBG default to unknown without evidence ref
         assert st_report.rejection_reasons.get("t1d_cohort_mixing_forbidden") == 1
         assert st_report.rejection_reasons.get("duplicate_timestamp") == 1
 
@@ -489,9 +490,17 @@ def test_shanghai_t2dm_cgmacros_provenance_consent_immutability_and_medication_d
             db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == st_patient.id)).all()
         )
         assert all(r.timezone_basis == "assumed_study_location" for r in st_readings)
-        st_summary = compute_glucose_summary(st_readings, native_only=True)
-        assert st_summary.timezone_basis == ["assumed_study_location"]
-        assert any("assumed_study_location" in n for n in st_summary.coverage.uncertainty_notes)
+        st_summary_native = compute_glucose_summary(st_readings, native_only=True)
+        assert st_summary_native.observation_count == 0
+        assert st_summary_native.excluded_non_cgm_count == 1
+        assert st_summary_native.excluded_non_native_count == 4
+        assert any("unverified/unknown" in n for n in st_summary_native.coverage.uncertainty_notes)
+
+        st_summary_all = compute_glucose_summary(st_readings, native_only=False)
+        assert st_summary_all.observation_count == 4
+        assert st_summary_all.excluded_non_cgm_count == 1
+        assert st_summary_all.timezone_basis == ["assumed_study_location"]
+        assert any("assumed_study_location" in n for n in st_summary_all.coverage.uncertainty_notes)
 
         # Verify medication regimens and deduplicated vs genuine separate timestamped MedicationEvents
         st_meds = list(db.scalars(select(Medication).where(Medication.patient_id == st_patient.id)).all())

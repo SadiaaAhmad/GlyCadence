@@ -6,6 +6,7 @@ import pandas as pd
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.audit import record_audit_event
 from app.ingestion.common import (
     PREPROCESSING_VERSION,
     IngestionSummary,
@@ -134,7 +135,8 @@ def ingest_shanghai_t2dm(
     source_url: str = DEFAULT_SOURCE_URL,
     preprocessing_version: str = PREPROCESSING_VERSION,
     assumed_iana_tz: str | None = "Asia/Shanghai",
-    source_verified_native_export: bool = True,
+    source_verified_native_export: bool = False,
+    native_evidence_reference: str | None = None,
     participant_consent_version: str | None = None,
 ) -> IngestionSummary:
     """Ingest ShanghaiT2DM research participant data with strict provenance & validation.
@@ -142,16 +144,20 @@ def ingest_shanghai_t2dm(
     Non-negotiable rules enforced:
     - Figshare item/version (``10.6084/m9.figshare.20444397.v1`` in collection ``6310860``)
       and license ``CC BY 4.0`` recorded on ``DatasetImport`` — never stored in ``Patient.consent_version``.
-    - ``source_file_checksum`` is set ONLY when an actual single regular file is supplied;
-      directories use ``directory_manifest_checksum``; in-memory payloads use ``input_payload_checksum``.
-    - Naive Shanghai timestamps without an explicit offset are parsed via ``ZoneInfo('Asia/Shanghai')``
-      with ``timezone_basis='assumed_study_location'`` (or ``'source_confirmed'`` only when an explicit
-      offset is present in the source timestamp).
-    - Medication provenance: summary-sheet medication fields create ``Medication`` regimens only
-      (never ``MedicationEvent`` rows). Time-series rows create ``MedicationEvent(status='unknown')``
-      with ``source_sheet`` and ``source_cell_ref``, suppressing contiguous 15-min fill-down cells
-      while preserving genuine separate timestamped administrations.
+    - ``source_verified_native_export`` defaults to ``False`` (all unverified rows default to ``'unknown'``).
+      Setting ``source_verified_native_export=True`` requires a non-empty ``native_evidence_reference``
+      citation, which is recorded in ``dataset_imports.quality_report_summary`` and ``audit_logs``.
+    - CBG / finger-stick rows are never stamped as ``native`` CGM.
     """
+    if source_verified_native_export and (
+        native_evidence_reference is None or not str(native_evidence_reference).strip()
+    ):
+        raise ValueError(
+            "native_evidence_reference is required when source_verified_native_export=True"
+        )
+    cleaned_evidence_ref = (
+        str(native_evidence_reference).strip() if native_evidence_reference else None
+    )
     tracker = RejectionTracker()
     source_file_checksum, directory_manifest_checksum, input_payload_checksum = _resolve_checksums(
         participant_sources, summary_source, source_file_path
@@ -403,7 +409,7 @@ def ingest_shanghai_t2dm(
                         raw_payload=row,
                     )
 
-            # 2. CBG fingerstick reading
+            # 2. CBG fingerstick reading (never stamped as 'native' CGM)
             cbg_raw = _extract_column(row, ("cbg (mg / dl)", "cbg (mg/dl)", "cbg"))
             if not is_missing_value(cbg_raw):
                 try:
@@ -417,7 +423,8 @@ def ingest_shanghai_t2dm(
                         )
                     else:
                         existing_glucose_keys.add(c_key)
-                        provenance_counts[row_prov] = provenance_counts.get(row_prov, 0) + 1
+                        cbg_prov: ObservationProvenanceType = "unknown"
+                        provenance_counts[cbg_prov] = provenance_counts.get(cbg_prov, 0) + 1
                         db.add(
                             GlucoseReading(
                                 patient_id=patient.id,
@@ -433,7 +440,7 @@ def ingest_shanghai_t2dm(
                                 reading_type="cbg",
                                 device_id=None,
                                 sampling_interval_min=None,
-                                observation_provenance=row_prov,
+                                observation_provenance=cbg_prov,
                                 source_dataset=DATASET_NAME,
                                 source_record_id=f"{rec_id}:cbg",
                             )
@@ -588,8 +595,23 @@ def ingest_shanghai_t2dm(
             "timestamp_semantics": "real_world_local",
             "timezone_basis": sorted(observed_timezone_bases) or [primary_tz_basis],
             "assumed_iana_timezone": assumed_iana_tz,
+            "source_verified_native_export": source_verified_native_export,
+            "native_evidence_reference": cleaned_evidence_ref,
             "observation_provenance_counts": provenance_counts,
         }
+    )
+    record_audit_event(
+        db,
+        action="create_log",
+        resource_type="dataset_import",
+        resource_id=str(dataset_import.id),
+        context_metadata={
+            "dataset_name": DATASET_NAME,
+            "dataset_version": dataset_version,
+            "dataset_doi": dataset_doi,
+            "source_verified_native_export": source_verified_native_export,
+            "native_evidence_reference": cleaned_evidence_ref,
+        },
     )
     db.commit()
 

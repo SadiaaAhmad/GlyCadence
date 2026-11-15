@@ -75,7 +75,7 @@ class GlucoseReading(Base):
     device_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sampling_interval_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     observation_provenance: Mapped[str] = mapped_column(
-        String(32), nullable=False, default="native", server_default=text("'native'")
+        String(32), nullable=False, default="unknown", server_default=text("'unknown'")
     )
     source_dataset: Mapped[str] = mapped_column(String(64), nullable=False, default="app_user")
     source_record_id: Mapped[str | None] = mapped_column(String(128), nullable=True)

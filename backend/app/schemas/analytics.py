@@ -3,7 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CALCULATION_VERSION = "v1.1.0"
+CALCULATION_VERSION = "v1.2.0"
 
 
 class SourceRecordRef(BaseModel):
@@ -74,6 +74,10 @@ class CGMCoverageReport(BaseModel):
     derived_observation_count: int = 0
     unknown_observation_count: int = 0
     excluded_non_native_count: int = 0
+    excluded_non_cgm_count: int = 0
+    native_only: bool = True
+    include_non_native: bool = False
+    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
     timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
     timezone_basis: list[str] = Field(default_factory=lambda: ["source_confirmed"])
     calendar_date_comparable: bool = True
@@ -96,6 +100,10 @@ class GlucoseSummaryOut(BaseModel):
     derived_observation_count: int = 0
     unknown_observation_count: int = 0
     excluded_non_native_count: int = 0
+    excluded_non_cgm_count: int = 0
+    native_only: bool = True
+    include_non_native: bool = False
+    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
     timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
     timezone_basis: list[str] = Field(default_factory=lambda: ["source_confirmed"])
     calendar_date_comparable: bool = True
@@ -128,6 +136,10 @@ class MealResponseItem(BaseModel):
     excursion_delta_mg_dl: float | None
     post_meal_reading_count: int
     excluded_non_native_count: int = 0
+    excluded_non_cgm_count: int = 0
+    native_only: bool = True
+    include_non_native: bool = False
+    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
     post_meal_span_minutes: float
     max_consecutive_gap_minutes: float | None
     iauc_mg_dl_min: float | None
@@ -149,6 +161,11 @@ class DriftSummaryOut(BaseModel):
     recent_window_end: datetime | None = None
     baseline_observation_count: int = 0
     recent_observation_count: int = 0
+    excluded_non_native_count: int = 0
+    excluded_non_cgm_count: int = 0
+    native_only: bool = True
+    include_non_native: bool = False
+    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
     baseline_coverage_pct: float | None = None
     recent_coverage_pct: float | None = None
     baseline_mean_mg_dl: float | None
@@ -172,4 +189,7 @@ class MedicationPatternSummaryOut(BaseModel):
     unknown_count: int
     adherence_computable: bool
     observed_taken_pct: float | None
+    native_only: bool = True
+    include_non_native: bool = False
+    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
     uncertainty_notes: list[str]

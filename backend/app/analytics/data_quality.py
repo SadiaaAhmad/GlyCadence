@@ -60,6 +60,8 @@ def compute_cgm_coverage(
     engineering_threshold_pct: float = ENGINEERING_COVERAGE_THRESHOLD_PCT,
     provenance_counts: dict[str, int] | None = None,
     excluded_non_native_count: int = 0,
+    excluded_non_cgm_count: int = 0,
+    native_only: bool = True,
     timestamp_semantics: Sequence[str] | None = None,
     timezone_basis: Sequence[str] | None = None,
 ) -> CGMCoverageReport:
@@ -79,12 +81,17 @@ def compute_cgm_coverage(
     sem_list = sorted(set(timestamp_semantics)) if timestamp_semantics else ["utc_exact"]
     tz_basis_list = sorted(set(timezone_basis)) if timezone_basis else ["source_confirmed"]
     cal_comparable = "date_shifted_relative" not in sem_list
+    filter_mode = "native_only" if native_only else "include_non_native"
 
     extra_notes: list[str] = []
     if not cal_comparable:
         extra_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
     if "assumed_study_location" in tz_basis_list or "unknown" in tz_basis_list:
         extra_notes.append(ASSUMED_TIMEZONE_LIMITATION_NOTE)
+    if excluded_non_cgm_count > 0:
+        extra_notes.append(
+            f"Excluded {excluded_non_cgm_count} non-CGM reading(s) (e.g., cbg/fasting/pre_meal finger-stick observations) from CGM analytics."
+        )
     if excluded_non_native_count > 0:
         extra_notes.append(
             f"Excluded {excluded_non_native_count} reading(s) with non-native provenance "
@@ -96,6 +103,13 @@ def compute_cgm_coverage(
         now = datetime.now(timezone.utc)
         w_start = ensure_utc_dt(window_start) if window_start else now
         w_end = ensure_utc_dt(window_end) if window_end else now
+        empty_reason = (
+            "No verified native CGM readings available in the requested window "
+            "(all candidate CGM readings had unverified/unknown or non-native provenance and were excluded under native_only=True; "
+            "pass include_non_native=true for exploratory comparison or supply native_evidence_reference during ingestion)."
+            if (native_only and excluded_non_native_count > 0)
+            else "No verified native CGM readings available in the requested window."
+        )
         return CGMCoverageReport(
             window_start=w_start,
             window_end=w_end,
@@ -114,6 +128,10 @@ def compute_cgm_coverage(
             derived_observation_count=p_counts.get("derived", 0),
             unknown_observation_count=p_counts.get("unknown", 0),
             excluded_non_native_count=excluded_non_native_count,
+            excluded_non_cgm_count=excluded_non_cgm_count,
+            native_only=native_only,
+            include_non_native=not native_only,
+            provenance_filter_mode=filter_mode,
             timestamp_semantics=sem_list,
             timezone_basis=tz_basis_list,
             calendar_date_comparable=cal_comparable,
@@ -122,7 +140,7 @@ def compute_cgm_coverage(
             meets_engineering_period_threshold=False,
             deterministic_confidence=0.0,
             uncertainty_notes=[
-                "No verified native CGM readings available in the requested window.",
+                empty_reason,
                 *extra_notes,
             ],
         )
@@ -232,6 +250,10 @@ def compute_cgm_coverage(
         derived_observation_count=p_counts.get("derived", 0),
         unknown_observation_count=p_counts.get("unknown", 0),
         excluded_non_native_count=excluded_non_native_count,
+        excluded_non_cgm_count=excluded_non_cgm_count,
+        native_only=native_only,
+        include_non_native=not native_only,
+        provenance_filter_mode=filter_mode,
         timestamp_semantics=sem_list,
         timezone_basis=tz_basis_list,
         calendar_date_comparable=cal_comparable,

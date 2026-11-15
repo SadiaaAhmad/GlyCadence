@@ -4,6 +4,7 @@ from typing import Sequence
 from app.analytics.baselines import (
     GlucosePoint,
     filter_and_count_provenance,
+    filter_cgm_only,
     prepare_glucose_points,
 )
 from app.analytics.data_quality import DATE_SHIFTED_LIMITATION_NOTE, ensure_utc_dt
@@ -42,9 +43,11 @@ def evaluate_single_meal_response(
     post_end = meal_ts + timedelta(minutes=POST_MEAL_WINDOW_MIN)
     window_points = [p for p in all_points if pre_start <= p.recorded_at <= post_end]
 
+    cgm_window_points, excluded_non_cgm = filter_cgm_only(window_points)
     points, prov_counts, excluded_non_native = filter_and_count_provenance(
-        window_points, native_only=native_only
+        cgm_window_points, native_only=native_only
     )
+    filter_mode = "native_only" if native_only else "include_non_native"
 
     sem_set = {meal_timestamp_semantics, *(p.timestamp_semantics for p in window_points)}
     resolved_sem = "date_shifted_relative" if "date_shifted_relative" in sem_set else meal_timestamp_semantics
@@ -58,6 +61,10 @@ def evaluate_single_meal_response(
 
     if not cal_comparable:
         uncertainty_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
+    if excluded_non_cgm > 0:
+        uncertainty_notes.append(
+            f"Excluded {excluded_non_cgm} non-CGM reading(s) (e.g., cbg/fasting/pre_meal finger-stick observations) in meal window."
+        )
     if excluded_non_native > 0:
         uncertainty_notes.append(
             f"Excluded {excluded_non_native} non-native glucose reading(s) (interpolated/derived/unknown) in meal window."
@@ -121,6 +128,10 @@ def evaluate_single_meal_response(
             excursion_delta_mg_dl=excursion_delta,
             post_meal_reading_count=post_count,
             excluded_non_native_count=excluded_non_native,
+            excluded_non_cgm_count=excluded_non_cgm,
+            native_only=native_only,
+            include_non_native=not native_only,
+            provenance_filter_mode=filter_mode,
             post_meal_span_minutes=span_minutes,
             max_consecutive_gap_minutes=max_gap_min,
             iauc_mg_dl_min=None,
@@ -205,6 +216,10 @@ def evaluate_single_meal_response(
         excursion_delta_mg_dl=excursion_delta,
         post_meal_reading_count=post_count,
         excluded_non_native_count=excluded_non_native,
+        excluded_non_cgm_count=excluded_non_cgm,
+        native_only=native_only,
+        include_non_native=not native_only,
+        provenance_filter_mode=filter_mode,
         post_meal_span_minutes=span_minutes,
         max_consecutive_gap_minutes=max_gap_min,
         iauc_mg_dl_min=iauc_rounded,

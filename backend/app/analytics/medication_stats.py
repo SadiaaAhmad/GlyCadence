@@ -7,6 +7,8 @@ from app.schemas.analytics import MedicationPatternSummaryOut
 def compute_medication_pattern_summary(
     medications: Sequence[Medication | dict],
     events: Sequence[MedicationEvent | dict],
+    *,
+    native_only: bool = True,
 ) -> MedicationPatternSummaryOut:
     """Summarize prescribed regimens and recorded medication events without fabricating adherence.
 
@@ -61,5 +63,8 @@ def compute_medication_pattern_summary(
         unknown_count=unknown,
         adherence_computable=adherence_computable,
         observed_taken_pct=observed_taken_pct,
+        native_only=native_only,
+        include_non_native=not native_only,
+        provenance_filter_mode="native_only" if native_only else "include_non_native",
         uncertainty_notes=notes,
     )

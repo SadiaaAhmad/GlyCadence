@@ -46,9 +46,12 @@ def get_analytics_summary(
     db: Annotated[Session, Depends(get_db)],
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
+    native_only: bool = Query(default=True),
+    include_non_native: bool = Query(default=False),
 ) -> GlucoseSummaryOut:
     patient = require_patient_access(patient_id, current_user, db, write=False)
     s_utc, e_utc = _validate_window(start, end)
+    effective_native_only = False if include_non_native else native_only
 
     stmt = select(GlucoseReading).where(GlucoseReading.patient_id == patient.id)
     if s_utc is not None:
@@ -66,11 +69,20 @@ def get_analytics_summary(
         patient_id=patient.id,
         resource_id=str(patient.id),
         request=request,
-        context_metadata={"cohort_type": patient.cohort_type, "actor_role": current_user.role},
+        context_metadata={
+            "cohort_type": patient.cohort_type,
+            "actor_role": current_user.role,
+            "native_only": effective_native_only,
+        },
     )
     db.commit()
 
-    return compute_glucose_summary(readings, window_start=s_utc, window_end=e_utc)
+    return compute_glucose_summary(
+        readings,
+        window_start=s_utc,
+        window_end=e_utc,
+        native_only=effective_native_only,
+    )
 
 
 @router.get("/drift", response_model=DriftSummaryOut)
@@ -81,9 +93,12 @@ def get_analytics_drift(
     db: Annotated[Session, Depends(get_db)],
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
+    native_only: bool = Query(default=True),
+    include_non_native: bool = Query(default=False),
 ) -> DriftSummaryOut:
     patient = require_patient_access(patient_id, current_user, db, write=False)
     s_utc, e_utc = _validate_window(start, end)
+    effective_native_only = False if include_non_native else native_only
 
     stmt = select(GlucoseReading).where(GlucoseReading.patient_id == patient.id)
     if s_utc is not None:
@@ -101,11 +116,15 @@ def get_analytics_drift(
         patient_id=patient.id,
         resource_id=str(patient.id),
         request=request,
-        context_metadata={"cohort_type": patient.cohort_type, "actor_role": current_user.role},
+        context_metadata={
+            "cohort_type": patient.cohort_type,
+            "actor_role": current_user.role,
+            "native_only": effective_native_only,
+        },
     )
     db.commit()
 
-    return compute_glucose_drift(readings)
+    return compute_glucose_drift(readings, native_only=effective_native_only)
 
 
 @router.get("/meal-responses", response_model=list[MealResponseItem])
@@ -116,9 +135,12 @@ def get_analytics_meal_responses(
     db: Annotated[Session, Depends(get_db)],
     start: datetime | None = Query(default=None),
     end: datetime | None = Query(default=None),
+    native_only: bool = Query(default=True),
+    include_non_native: bool = Query(default=False),
 ) -> list[MealResponseItem]:
     patient = require_patient_access(patient_id, current_user, db, write=False)
     s_utc, e_utc = _validate_window(start, end)
+    effective_native_only = False if include_non_native else native_only
 
     meal_stmt = select(Meal).where(Meal.patient_id == patient.id)
     if s_utc is not None:
@@ -143,11 +165,15 @@ def get_analytics_meal_responses(
         patient_id=patient.id,
         resource_id=str(patient.id),
         request=request,
-        context_metadata={"cohort_type": patient.cohort_type, "actor_role": current_user.role},
+        context_metadata={
+            "cohort_type": patient.cohort_type,
+            "actor_role": current_user.role,
+            "native_only": effective_native_only,
+        },
     )
     db.commit()
 
-    return evaluate_meal_responses(meals, readings)
+    return evaluate_meal_responses(meals, readings, native_only=effective_native_only)
 
 
 @router.get("/medication-patterns", response_model=MedicationPatternSummaryOut)
@@ -156,8 +182,11 @@ def get_analytics_medication_patterns(
     request: Request,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
+    native_only: bool = Query(default=True),
+    include_non_native: bool = Query(default=False),
 ) -> MedicationPatternSummaryOut:
     patient = require_patient_access(patient_id, current_user, db, write=False)
+    effective_native_only = False if include_non_native else native_only
 
     meds = list(
         db.scalars(select(Medication).where(Medication.patient_id == patient.id)).all()
@@ -178,8 +207,12 @@ def get_analytics_medication_patterns(
         patient_id=patient.id,
         resource_id=str(patient.id),
         request=request,
-        context_metadata={"cohort_type": patient.cohort_type, "actor_role": current_user.role},
+        context_metadata={
+            "cohort_type": patient.cohort_type,
+            "actor_role": current_user.role,
+            "native_only": effective_native_only,
+        },
     )
     db.commit()
 
-    return compute_medication_pattern_summary(meds, events)
+    return compute_medication_pattern_summary(meds, events, native_only=effective_native_only)

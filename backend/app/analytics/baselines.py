@@ -26,9 +26,10 @@ class GlucosePoint:
     recorded_at: datetime
     glucose_mg_dl: float
     source_dataset: str
+    reading_type: str = "cgm"
     sampling_interval_min: int | None = None
     device_id: str | None = None
-    observation_provenance: str = "native"
+    observation_provenance: str = "unknown"
     timestamp_semantics: str = "utc_exact"
     timezone_basis: str = "source_confirmed"
 
@@ -47,33 +48,40 @@ def prepare_glucose_points(
                 recorded_at=ensure_utc_dt(item.recorded_at),
                 glucose_mg_dl=float(item.glucose_mg_dl),
                 source_dataset=item.source_dataset,
+                reading_type=(item.reading_type or "cgm").strip().lower(),
                 sampling_interval_min=item.sampling_interval_min,
                 device_id=item.device_id,
-                observation_provenance=item.observation_provenance or "native",
+                observation_provenance=item.observation_provenance or "unknown",
                 timestamp_semantics=item.timestamp_semantics or "utc_exact",
                 timezone_basis=item.timezone_basis or "source_confirmed",
             )
         elif isinstance(item, dict):
+            raw_prov = item.get("observation_provenance")
+            raw_rtype = item.get("reading_type")
             pt = GlucosePoint(
                 record_id=str(item.get("id") or item.get("record_id") or f"pt-{idx}"),
                 recorded_at=ensure_utc_dt(item["recorded_at"]),
                 glucose_mg_dl=float(item["glucose_mg_dl"]),
                 source_dataset=str(item.get("source_dataset") or "app_user"),
+                reading_type=str(raw_rtype).strip().lower() if raw_rtype else "cgm",
                 sampling_interval_min=item.get("sampling_interval_min"),
                 device_id=item.get("device_id"),
-                observation_provenance=str(item.get("observation_provenance") or "native"),
+                observation_provenance=str(raw_prov).strip().lower() if raw_prov else "unknown",
                 timestamp_semantics=str(item.get("timestamp_semantics") or "utc_exact"),
                 timezone_basis=str(item.get("timezone_basis") or "source_confirmed"),
             )
         else:
+            raw_prov = getattr(item, "observation_provenance", None)
+            raw_rtype = getattr(item, "reading_type", None)
             pt = GlucosePoint(
                 record_id=str(item.id),
                 recorded_at=ensure_utc_dt(item.recorded_at),
                 glucose_mg_dl=float(item.glucose_mg_dl),
                 source_dataset=str(item.source_dataset),
+                reading_type=str(raw_rtype).strip().lower() if raw_rtype else "cgm",
                 sampling_interval_min=item.sampling_interval_min,
                 device_id=item.device_id,
-                observation_provenance=getattr(item, "observation_provenance", "native") or "native",
+                observation_provenance=str(raw_prov).strip().lower() if raw_prov else "unknown",
                 timestamp_semantics=getattr(item, "timestamp_semantics", "utc_exact") or "utc_exact",
                 timezone_basis=getattr(item, "timezone_basis", "source_confirmed") or "source_confirmed",
             )
@@ -88,9 +96,9 @@ def prepare_glucose_points(
     seen_keys: set[tuple] = set()
     for _, pt in extracted:
         key = (
-            (pt.recorded_at,)
+            (pt.recorded_at, pt.reading_type)
             if deduplicate_across_devices
-            else (pt.recorded_at, pt.device_id or "__none__")
+            else (pt.recorded_at, pt.reading_type, pt.device_id or "__none__")
         )
         if key in seen_keys:
             continue
@@ -98,6 +106,12 @@ def prepare_glucose_points(
         deduped.append(pt)
 
     return deduped
+
+
+def filter_cgm_only(points: Sequence[GlucosePoint]) -> tuple[list[GlucosePoint], int]:
+    """Filter strictly to reading_type == 'cgm' and return (cgm_points, excluded_non_cgm_count)."""
+    cgm_pts = [p for p in points if p.reading_type == "cgm"]
+    return cgm_pts, len(points) - len(cgm_pts)
 
 
 def filter_and_count_provenance(
@@ -143,9 +157,11 @@ def compute_glucose_summary(
 
     sem_list = sorted({p.timestamp_semantics for p in all_points}) if all_points else ["utc_exact"]
     tz_basis_list = sorted({p.timezone_basis for p in all_points}) if all_points else ["source_confirmed"]
+    cgm_points, excluded_non_cgm = filter_cgm_only(all_points)
     points, prov_counts, excluded_non_native = filter_and_count_provenance(
-        all_points, native_only=native_only
+        cgm_points, native_only=native_only
     )
+    filter_mode = "native_only" if native_only else "include_non_native"
 
     coverage = compute_cgm_coverage(
         [p.recorded_at for p in points],
@@ -155,6 +171,8 @@ def compute_glucose_summary(
         default_interval_min=default_interval_min,
         provenance_counts=prov_counts,
         excluded_non_native_count=excluded_non_native,
+        excluded_non_cgm_count=excluded_non_cgm,
+        native_only=native_only,
         timestamp_semantics=sem_list,
         timezone_basis=tz_basis_list,
     )
@@ -170,6 +188,10 @@ def compute_glucose_summary(
             derived_observation_count=prov_counts["derived"],
             unknown_observation_count=prov_counts["unknown"],
             excluded_non_native_count=excluded_non_native,
+            excluded_non_cgm_count=excluded_non_cgm,
+            native_only=native_only,
+            include_non_native=not native_only,
+            provenance_filter_mode=filter_mode,
             timestamp_semantics=coverage.timestamp_semantics,
             timezone_basis=coverage.timezone_basis,
             calendar_date_comparable=coverage.calendar_date_comparable,
@@ -280,6 +302,10 @@ def compute_glucose_summary(
         derived_observation_count=prov_counts["derived"],
         unknown_observation_count=prov_counts["unknown"],
         excluded_non_native_count=excluded_non_native,
+        excluded_non_cgm_count=excluded_non_cgm,
+        native_only=native_only,
+        include_non_native=not native_only,
+        provenance_filter_mode=filter_mode,
         timestamp_semantics=coverage.timestamp_semantics,
         timezone_basis=coverage.timezone_basis,
         calendar_date_comparable=coverage.calendar_date_comparable,
