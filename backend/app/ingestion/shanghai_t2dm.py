@@ -47,7 +47,17 @@ LICENSE_IDENTIFIER = "CC BY 4.0"
 LICENSE_URL = "https://creativecommons.org/licenses/by/4.0/"
 FREESTYLE_LIBRE_H_DEVICE = "FreeStyle_Libre_H"
 SHANGHAI_CGM_INTERVAL_MIN = 15
-VALID_PROVENANCES: set[str] = {"native", "interpolated", "derived", "unknown"}
+SHANGHAI_V3_PAPER_CITATION = (
+    "Zhao et al., Scientific Data 10:35 (2023) doi:10.1038/s41597-023-01940-7"
+)
+VALID_PROVENANCES: set[str] = {
+    "native",
+    "dataset_documented",
+    "archive_aligned",
+    "interpolated",
+    "derived",
+    "unknown",
+}
 
 
 def _excel_col_letter(col_idx: int) -> str:
@@ -181,13 +191,18 @@ def _resolve_row_provenance(
     row: dict[str, Any],
     *,
     source_verified_native_export: bool,
+    dataset_documented_export: bool = False,
 ) -> ObservationProvenanceType:
     explicit = _extract_column(row, ("observation_provenance", "cgm_provenance", "provenance"))
     if not is_missing_value(explicit):
         cleaned = str(explicit).strip().lower()
         if cleaned in VALID_PROVENANCES:
             return cleaned  # type: ignore[return-value]
-    return "native" if source_verified_native_export else "unknown"
+    if source_verified_native_export:
+        return "native"
+    if dataset_documented_export:
+        return "dataset_documented"
+    return "unknown"
 
 
 def ingest_shanghai_t2dm(
@@ -202,6 +217,7 @@ def ingest_shanghai_t2dm(
     preprocessing_version: str = PREPROCESSING_VERSION,
     assumed_iana_tz: str | None = "Asia/Shanghai",
     source_verified_native_export: bool = False,
+    dataset_documented_export: bool = False,
     native_evidence_reference: str | None = None,
     participant_consent_version: str | None = None,
     extra_quality_metadata: dict[str, Any] | None = None,
@@ -209,18 +225,22 @@ def ingest_shanghai_t2dm(
     """Ingest ShanghaiT2DM research participant data with strict provenance & validation.
 
     Non-negotiable rules enforced:
-    - Figshare item/version (``10.6084/m9.figshare.20444397.v1`` in collection ``6310860``)
+    - Figshare item/version (``10.6084/m9.figshare.20444397.v3`` canonical or ``v1`` legacy)
       and license ``CC BY 4.0`` recorded on ``DatasetImport`` — never stored in ``Patient.consent_version``.
-    - ``source_verified_native_export`` defaults to ``False`` (all unverified rows default to ``'unknown'``).
-      Setting ``source_verified_native_export=True`` requires a non-empty ``native_evidence_reference``
-      citation, which is recorded in ``dataset_imports.quality_report_summary`` and ``audit_logs``.
-    - CBG / finger-stick rows are never stamped as ``native`` CGM.
+    - ``source_verified_native_export=True`` or ``dataset_documented_export=True`` requires a non-empty
+      ``native_evidence_reference`` citation (with ``10.1038/s41597-023-01940-7`` required for
+      ``dataset_documented_export=True``), recorded in ``dataset_imports.quality_report_summary`` and ``audit_logs``.
+    - CBG / finger-stick rows are never stamped as ``native`` or ``dataset_documented`` CGM.
     """
-    if source_verified_native_export and (
+    if (source_verified_native_export or dataset_documented_export) and (
         native_evidence_reference is None or not str(native_evidence_reference).strip()
     ):
         raise ValueError(
-            "native_evidence_reference is required when source_verified_native_export=True"
+            "native_evidence_reference is required when source_verified_native_export=True or dataset_documented_export=True"
+        )
+    if dataset_documented_export and "10.1038/s41597-023-01940-7" not in str(native_evidence_reference):
+        raise ValueError(
+            "native_evidence_reference must cite DOI 10.1038/s41597-023-01940-7 when dataset_documented_export=True"
         )
     cleaned_evidence_ref = (
         str(native_evidence_reference).strip() if native_evidence_reference else None
@@ -269,7 +289,14 @@ def ingest_shanghai_t2dm(
     participants_ingested = 0
     seen_base_participants: set[str] = set()
     total_sheets_read = 0
-    provenance_counts: dict[str, int] = {"native": 0, "interpolated": 0, "derived": 0, "unknown": 0}
+    provenance_counts: dict[str, int] = {
+        "native": 0,
+        "dataset_documented": 0,
+        "archive_aligned": 0,
+        "interpolated": 0,
+        "derived": 0,
+        "unknown": 0,
+    }
     observed_timezone_bases: set[str] = set()
 
     for ext_id, ts_source in participant_sources.items():
@@ -539,7 +566,9 @@ def ingest_shanghai_t2dm(
             raw_unit_col = _extract_column(row, ("unit", "raw_unit", "glucose_unit"))
             unit_str = str(raw_unit_col).strip() if not is_missing_value(raw_unit_col) else "mg/dL"
             row_prov = _resolve_row_provenance(
-                row, source_verified_native_export=source_verified_native_export
+                row,
+                source_verified_native_export=source_verified_native_export,
+                dataset_documented_export=dataset_documented_export,
             )
 
             # 1. CGM reading (FreeStyle Libre H, 15-min sensor capture)
@@ -787,6 +816,7 @@ def ingest_shanghai_t2dm(
         "timezone_basis": sorted(observed_timezone_bases) or [primary_tz_basis],
         "assumed_iana_timezone": assumed_iana_tz,
         "source_verified_native_export": source_verified_native_export,
+        "dataset_documented_export": dataset_documented_export,
         "native_evidence_reference": cleaned_evidence_ref,
         "observation_provenance_counts": provenance_counts,
     }
@@ -808,6 +838,7 @@ def ingest_shanghai_t2dm(
             "dataset_version": dataset_version,
             "dataset_doi": dataset_doi,
             "source_verified_native_export": source_verified_native_export,
+            "dataset_documented_export": dataset_documented_export,
             "native_evidence_reference": cleaned_evidence_ref,
         },
     )
@@ -845,15 +876,22 @@ def ingest_shanghai_t2dm_archive(
     source_url: str = CANONICAL_SOURCE_URL,
     assumed_iana_tz: str | None = "Asia/Shanghai",
     source_verified_native_export: bool = False,
-    native_evidence_reference: str | None = None,
+    dataset_documented_export: bool | None = None,
+    native_evidence_reference: str | None = SHANGHAI_V3_PAPER_CITATION,
 ) -> IngestionSummary:
     """Safely extract a ShanghaiT2DM ZIP archive and ingest all T2DM summary & participant files.
 
     Defaults to the canonical Figshare v3 release (``data.zip``, ``10.6084/m9.figshare.20444397.v3``)
-    matching the 2023 *Scientific Data* publication (100 T2D patients across 109 admissions).
+    matching the 2023 *Scientific Data* publication (100 T2D patients across 109 admissions),
+    stamping CGM rows as ``dataset_documented`` with mandatory citation ``10.1038/s41597-023-01940-7``.
     Legacy v1 (``Diabetes_dataset.zip``) is excluded from default pipelines and only ingested when
     explicitly overridden.
     """
+    is_v3_documented = (
+        (dataset_version == CANONICAL_DATASET_VERSION)
+        if dataset_documented_export is None
+        else dataset_documented_export
+    )
     arch = Path(archive_path)
     archive_sha256 = compute_source_file_checksum(arch)
     with tempfile.TemporaryDirectory(prefix="glycadence_shanghai_") as tmp_dir:
@@ -893,6 +931,7 @@ def ingest_shanghai_t2dm_archive(
             source_url=source_url,
             assumed_iana_tz=assumed_iana_tz,
             source_verified_native_export=source_verified_native_export,
+            dataset_documented_export=is_v3_documented,
             native_evidence_reference=native_evidence_reference,
             extra_quality_metadata={
                 "archive_sha256": archive_sha256,

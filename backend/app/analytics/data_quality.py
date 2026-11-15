@@ -3,7 +3,11 @@ from datetime import date, datetime, timedelta, timezone, tzinfo
 import math
 from typing import Sequence
 
-from app.ingestion.common import resolve_iana_tz
+from app.ingestion.common import (
+    ALL_OBSERVATION_PROVENANCES,
+    DEFAULT_ALLOWED_PROVENANCES,
+    resolve_iana_tz,
+)
 from app.schemas.analytics import CGMCoverageReport, DailyCoverageItem
 
 ENGINEERING_COVERAGE_THRESHOLD_PCT = 70.0
@@ -15,6 +19,14 @@ DATE_SHIFTED_LIMITATION_NOTE = (
 ASSUMED_TIMEZONE_LIMITATION_NOTE = (
     "Timestamps include assumed_study_location/unknown timezone basis (e.g., Asia/Shanghai assumed from study location "
     "because raw spreadsheet timestamps lack explicit UTC offsets)."
+)
+DATASET_DOCUMENTED_DISCLOSURE_NOTE = (
+    "Includes dataset_documented CGM readings (ShanghaiT2DM FreeStyle Libre H 15-min clinical export documented in "
+    "Zhao et al., Scientific Data 2023, doi:10.1038/s41597-023-01940-7; raw vendor export headers not separately bundled)."
+)
+ARCHIVE_ALIGNED_DISCLOSURE_NOTE = (
+    "Includes archive_aligned CGM readings (PhysioNet CGMacros 1-minute aligned grid containing linearly interpolated "
+    "values between nominal 15-min FreeStyle Libre Pro / 5-min Dexcom G6 Pro sensor samples)."
 )
 
 
@@ -66,6 +78,7 @@ def compute_cgm_coverage(
     device_id: str | None = None,
     devices_present: Sequence[str] | None = None,
     native_only: bool = True,
+    allowed_provenances: Sequence[str] | set[str] | None = None,
     timestamp_semantics: Sequence[str] | None = None,
     timezone_basis: Sequence[str] | None = None,
     timezone_name: str | None = None,
@@ -79,21 +92,36 @@ def compute_cgm_coverage(
 
     p_counts = provenance_counts or {
         "native": len(unique_sorted),
+        "dataset_documented": 0,
+        "archive_aligned": 0,
         "interpolated": 0,
         "derived": 0,
         "unknown": 0,
     }
+    if allowed_provenances is not None:
+        allowed_set = {str(x).strip().lower() for x in allowed_provenances}
+    elif not native_only:
+        allowed_set = set(ALL_OBSERVATION_PROVENANCES)
+    else:
+        allowed_set = set(DEFAULT_ALLOWED_PROVENANCES)
+    allowed_list = sorted(allowed_set)
+    is_strict_default = allowed_set <= set(DEFAULT_ALLOWED_PROVENANCES)
+
     sem_list = sorted(set(timestamp_semantics)) if timestamp_semantics else ["utc_exact"]
     tz_basis_list = sorted(set(timezone_basis)) if timezone_basis else ["source_confirmed"]
     dev_list = sorted(set(devices_present)) if devices_present else ([device_id] if device_id else [])
     cal_comparable = "date_shifted_relative" not in sem_list
-    filter_mode = "native_only" if native_only else "include_non_native"
+    filter_mode = "native_only" if is_strict_default else "include_non_native"
 
     extra_notes: list[str] = []
     if not cal_comparable:
         extra_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
     if "assumed_study_location" in tz_basis_list or "unknown" in tz_basis_list:
         extra_notes.append(ASSUMED_TIMEZONE_LIMITATION_NOTE)
+    if "dataset_documented" in allowed_set and p_counts.get("dataset_documented", 0) > 0:
+        extra_notes.append(DATASET_DOCUMENTED_DISCLOSURE_NOTE)
+    if "archive_aligned" in allowed_set and p_counts.get("archive_aligned", 0) > 0:
+        extra_notes.append(ARCHIVE_ALIGNED_DISCLOSURE_NOTE)
     if deduplicated_removed_count > 0:
         extra_notes.append(
             f"Removed {deduplicated_removed_count} duplicate timestamp observation(s) during preparation."
@@ -105,8 +133,8 @@ def compute_cgm_coverage(
     if excluded_non_native_count > 0:
         extra_notes.append(
             f"Excluded {excluded_non_native_count} reading(s) with non-native provenance "
-            f"(interpolated={p_counts.get('interpolated', 0)}, derived={p_counts.get('derived', 0)}, "
-            f"unknown={p_counts.get('unknown', 0)}) from native-cadence CGM analytics."
+            f"(archive_aligned={p_counts.get('archive_aligned', 0)}, interpolated={p_counts.get('interpolated', 0)}, "
+            f"derived={p_counts.get('derived', 0)}, unknown={p_counts.get('unknown', 0)}) from native-cadence CGM analytics."
         )
 
     if not unique_sorted:
@@ -116,8 +144,8 @@ def compute_cgm_coverage(
         empty_reason = (
             "No verified native CGM readings available in the requested window "
             "(all candidate CGM readings had unverified/unknown or non-native provenance and were excluded under native_only=True; "
-            "pass include_non_native=true for exploratory comparison or supply native_evidence_reference during ingestion)."
-            if (native_only and excluded_non_native_count > 0)
+            "pass include_non_native=true or allowed_provenances for exploratory comparison or supply native_evidence_reference during ingestion)."
+            if (is_strict_default and excluded_non_native_count > 0)
             else "No verified native CGM readings available in the requested window."
         )
         return CGMCoverageReport(
@@ -134,6 +162,8 @@ def compute_cgm_coverage(
             large_gaps_count=0,
             max_gap_minutes=0.0,
             native_observation_count=p_counts.get("native", 0),
+            dataset_documented_observation_count=p_counts.get("dataset_documented", 0),
+            archive_aligned_observation_count=p_counts.get("archive_aligned", 0),
             interpolated_observation_count=p_counts.get("interpolated", 0),
             derived_observation_count=p_counts.get("derived", 0),
             unknown_observation_count=p_counts.get("unknown", 0),
@@ -142,8 +172,9 @@ def compute_cgm_coverage(
             deduplicated_removed_count=deduplicated_removed_count,
             device_id=device_id,
             devices_present=dev_list,
-            native_only=native_only,
-            include_non_native=not native_only,
+            allowed_provenances=allowed_list,
+            native_only=is_strict_default,
+            include_non_native=not is_strict_default,
             provenance_filter_mode=filter_mode,
             timestamp_semantics=sem_list,
             timezone_basis=tz_basis_list,
@@ -303,6 +334,8 @@ def compute_cgm_coverage(
         large_gaps_count=large_gaps,
         max_gap_minutes=max_gap_min,
         native_observation_count=p_counts.get("native", 0),
+        dataset_documented_observation_count=p_counts.get("dataset_documented", 0),
+        archive_aligned_observation_count=p_counts.get("archive_aligned", 0),
         interpolated_observation_count=p_counts.get("interpolated", 0),
         derived_observation_count=p_counts.get("derived", 0),
         unknown_observation_count=p_counts.get("unknown", 0),
@@ -311,8 +344,9 @@ def compute_cgm_coverage(
         deduplicated_removed_count=deduplicated_removed_count,
         device_id=device_id,
         devices_present=dev_list,
-        native_only=native_only,
-        include_non_native=not native_only,
+        allowed_provenances=allowed_list,
+        native_only=is_strict_default,
+        include_non_native=not is_strict_default,
         provenance_filter_mode=filter_mode,
         timestamp_semantics=sem_list,
         timezone_basis=tz_basis_list,

@@ -1177,3 +1177,101 @@ def test_audit_item_4_negative_excursion_direction_and_drift_insufficient_data_n
     assert drift_empty.baseline_mean_mg_dl is None
     assert drift_empty.recent_mean_mg_dl is None
     assert drift_empty.delta_mg_dl is None
+
+
+# ---------------------------------------------------------------------------
+# Decision A — dataset_documented & archive_aligned provenance, allowed_provenances set
+# ---------------------------------------------------------------------------
+
+
+def test_decision_a_provenance_tiers_allowed_set_and_evidence_disclosure(tmp_path):
+    import zipfile
+    import pandas as pd
+    from app.ingestion.cgmacros import ingest_cgmacros_archive
+    from app.ingestion.shanghai_t2dm import ingest_shanghai_t2dm_archive
+
+    conn = get_engine().connect()
+    outer_tx = conn.begin()
+    db = Session(bind=conn)
+    try:
+        # 1. ShanghaiT2DM v3 archive CGM rows become 'dataset_documented' and require native_evidence_reference (10.1038/s41597-023-01940-7)
+        sh_zip = tmp_path / "sh_v3_test.zip"
+        df_sum = pd.DataFrame(
+            [{"Patient Number": "2088_0_20201116", "Age (years)": 60, "Gender (Female=1, Male=2)": 1}]
+        )
+        df_ts = pd.DataFrame(
+            [
+                {"Date": "2020-11-16 08:00:00", "CGM (mg / dl)": 120.0, "CBG (mg / dl)": 122.0},
+                {"Date": "2020-11-16 08:15:00", "CGM (mg / dl)": 135.0},
+            ]
+        )
+        sum_xlsx = tmp_path / "Shanghai_T2DM_Summary.xlsx"
+        ts_xlsx = tmp_path / "2088_0_20201116.xlsx"
+        df_sum.to_excel(sum_xlsx, index=False)
+        df_ts.to_excel(ts_xlsx, index=False)
+        with zipfile.ZipFile(sh_zip, "w") as zf:
+            zf.write(sum_xlsx, arcname="Shanghai_T2DM_Summary.xlsx")
+            zf.write(ts_xlsx, arcname="Shanghai_T2DM/2088_0_20201116.xlsx")
+
+        with pytest.raises(ValueError, match="native_evidence_reference"):
+            ingest_shanghai_t2dm_archive(db, sh_zip, native_evidence_reference="")
+
+        sh_rep = ingest_shanghai_t2dm_archive(db, sh_zip)
+        assert sh_rep.observation_provenance_counts["dataset_documented"] == 2
+        assert sh_rep.observation_provenance_counts["unknown"] == 1  # CBG stays unknown
+        sh_imp = db.get(DatasetImport, uuid.UUID(sh_rep.dataset_import_id))
+        assert sh_imp is not None
+        assert "10.1038/s41597-023-01940-7" in str(sh_imp.quality_report_summary.get("native_evidence_reference"))
+
+        # 2. CGMacros archive CGM rows become 'archive_aligned' (linearly interpolated 1-min grid)
+        cg_zip = tmp_path / "cg_test.zip"
+        bio_csv = tmp_path / "bio.csv"
+        sub_csv = tmp_path / "CGMacros-003.csv"
+        pd.DataFrame([{"subject": 3, "Age": 55, "Gender": "M", "A1c PDL (Lab)": 7.2}]).to_csv(bio_csv, index=False)
+        pd.DataFrame(
+            [
+                {"Timestamp": "2020-03-11 09:18:00", "Libre GL": 155.0, "Dexcom GL": 150.0},
+                {"Timestamp": "2020-03-11 09:19:00", "Libre GL": 153.933333, "Dexcom GL": 149.2},
+            ]
+        ).to_csv(sub_csv, index=False)
+        with zipfile.ZipFile(cg_zip, "w") as zf:
+            zf.write(bio_csv, arcname="CGMacros/bio.csv")
+            zf.write(sub_csv, arcname="CGMacros/CGMacros-003/CGMacros-003.csv")
+
+        cg_rep = ingest_cgmacros_archive(db, cg_zip)
+        assert cg_rep.observation_provenance_counts["archive_aligned"] == 4
+        assert cg_rep.observation_provenance_counts["native"] == 0
+
+        # 3. Analytics default allowed_provenances = {"native", "dataset_documented"}:
+        #    Shanghai dataset_documented rows ARE included by default and disclosed in EvidenceItem!
+        sh_patient = db.scalar(select(Patient).where(Patient.dataset_import_id == uuid.UUID(sh_rep.dataset_import_id)))
+        sh_readings = list(db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == sh_patient.id)).all())
+        sh_sum = compute_glucose_summary(sh_readings)
+        assert sh_sum.observation_count == 2
+        assert sh_sum.dataset_documented_observation_count == 2
+        assert set(sh_sum.allowed_provenances) == {"native", "dataset_documented"}
+        ev0 = sh_sum.evidence_items[0]
+        assert set(ev0.allowed_provenances) == {"native", "dataset_documented"}
+        assert ev0.provenance_counts["dataset_documented"] == 2
+        assert any("dataset_documented" in n for n in ev0.uncertainty_notes)
+
+        # 4. CGMacros 'archive_aligned' rows are excluded under default allowed_provenances={"native", "dataset_documented"}
+        #    and included only when allowed_provenances explicitly opts in to "archive_aligned"
+        cg_patient = db.scalar(select(Patient).where(Patient.dataset_import_id == uuid.UUID(cg_rep.dataset_import_id)))
+        cg_readings = list(db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == cg_patient.id)).all())
+        cg_sum_default = compute_glucose_summary(cg_readings, device_id="FreeStyle_Libre_Pro")
+        assert cg_sum_default.observation_count == 0
+        assert cg_sum_default.archive_aligned_observation_count == 2
+
+        cg_sum_optin = compute_glucose_summary(
+            cg_readings,
+            device_id="FreeStyle_Libre_Pro",
+            allowed_provenances={"native", "dataset_documented", "archive_aligned"},
+        )
+        assert cg_sum_optin.observation_count == 2
+        assert "archive_aligned" in cg_sum_optin.evidence_items[0].allowed_provenances
+        assert cg_sum_optin.evidence_items[0].provenance_counts["archive_aligned"] == 2
+    finally:
+        db.close()
+        outer_tx.rollback()
+        conn.close()

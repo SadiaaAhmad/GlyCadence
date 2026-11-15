@@ -53,6 +53,8 @@ class EvidenceItem(BaseModel):
     calculation_method: str
     calculation_version: str = CALCULATION_VERSION
     missingness_pct: float = Field(ge=0.0, le=100.0)
+    allowed_provenances: tuple[str, ...] = ("dataset_documented", "native")
+    provenance_counts: dict[str, int] = Field(default_factory=dict)
     uncertainty_notes: tuple[str, ...] = ()
 
     @field_validator("window_start", "window_end")
@@ -100,6 +102,8 @@ class CGMCoverageReport(BaseModel):
     large_gaps_count: int
     max_gap_minutes: float
     native_observation_count: int = 0
+    dataset_documented_observation_count: int = 0
+    archive_aligned_observation_count: int = 0
     interpolated_observation_count: int = 0
     derived_observation_count: int = 0
     unknown_observation_count: int = 0
@@ -108,9 +112,12 @@ class CGMCoverageReport(BaseModel):
     deduplicated_removed_count: int = 0
     device_id: str | None = None
     devices_present: list[str] = Field(default_factory=list)
+    allowed_provenances: list[str] = Field(
+        default_factory=lambda: ["dataset_documented", "native"]
+    )
     native_only: bool = True
     include_non_native: bool = False
-    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
+    provenance_filter_mode: str = "native_only"
     timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
     timezone_basis: list[str] = Field(default_factory=lambda: ["source_confirmed"])
     calendar_date_comparable: bool = True
@@ -129,6 +136,8 @@ class GlucoseSummaryOut(BaseModel):
     window_end: datetime
     observation_count: int
     native_observation_count: int = 0
+    dataset_documented_observation_count: int = 0
+    archive_aligned_observation_count: int = 0
     interpolated_observation_count: int = 0
     derived_observation_count: int = 0
     unknown_observation_count: int = 0
@@ -137,9 +146,12 @@ class GlucoseSummaryOut(BaseModel):
     deduplicated_removed_count: int = 0
     device_id: str | None = None
     devices_present: list[str] = Field(default_factory=list)
+    allowed_provenances: list[str] = Field(
+        default_factory=lambda: ["dataset_documented", "native"]
+    )
     native_only: bool = True
     include_non_native: bool = False
-    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
+    provenance_filter_mode: str = "native_only"
     timestamp_semantics: list[str] = Field(default_factory=lambda: ["utc_exact"])
     timezone_basis: list[str] = Field(default_factory=lambda: ["source_confirmed"])
     calendar_date_comparable: bool = True
@@ -177,9 +189,12 @@ class MealResponseItem(BaseModel):
     deduplicated_removed_count: int = 0
     device_id: str | None = None
     devices_present: list[str] = Field(default_factory=list)
+    allowed_provenances: list[str] = Field(
+        default_factory=lambda: ["dataset_documented", "native"]
+    )
     native_only: bool = True
     include_non_native: bool = False
-    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
+    provenance_filter_mode: str = "native_only"
     post_meal_span_minutes: float
     max_consecutive_gap_minutes: float | None
     iauc_mg_dl_min: float | None
@@ -207,9 +222,12 @@ class DriftSummaryOut(BaseModel):
     deduplicated_removed_count: int = 0
     device_id: str | None = None
     devices_present: list[str] = Field(default_factory=list)
+    allowed_provenances: list[str] = Field(
+        default_factory=lambda: ["dataset_documented", "native"]
+    )
     native_only: bool = True
     include_non_native: bool = False
-    provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
+    provenance_filter_mode: str = "native_only"
     baseline_coverage_pct: float | None = None
     recent_coverage_pct: float | None = None
     baseline_mean_mg_dl: float | None = None

@@ -49,6 +49,7 @@ def get_analytics_summary(
     end: datetime | None = Query(default=None),
     native_only: bool = Query(default=True),
     include_non_native: bool = Query(default=False),
+    allowed_provenances: list[str] | None = Query(default=None),
     device_id: str | None = Query(default=None),
 ) -> GlucoseSummaryOut:
     patient = require_patient_access(patient_id, current_user, db, write=False)
@@ -75,6 +76,7 @@ def get_analytics_summary(
             "cohort_type": patient.cohort_type,
             "actor_role": current_user.role,
             "native_only": effective_native_only,
+            "allowed_provenances": allowed_provenances,
             "device_id": device_id,
         },
     )
@@ -86,6 +88,7 @@ def get_analytics_summary(
             window_start=s_utc,
             window_end=e_utc,
             native_only=effective_native_only,
+            allowed_provenances=allowed_provenances,
             device_id=device_id,
             timezone_name=patient.timezone,
         )
@@ -110,6 +113,7 @@ def get_analytics_drift(
     end: datetime | None = Query(default=None),
     native_only: bool = Query(default=True),
     include_non_native: bool = Query(default=False),
+    allowed_provenances: list[str] | None = Query(default=None),
     device_id: str | None = Query(default=None),
 ) -> DriftSummaryOut:
     patient = require_patient_access(patient_id, current_user, db, write=False)
@@ -136,6 +140,7 @@ def get_analytics_drift(
             "cohort_type": patient.cohort_type,
             "actor_role": current_user.role,
             "native_only": effective_native_only,
+            "allowed_provenances": allowed_provenances,
             "device_id": device_id,
         },
     )
@@ -145,6 +150,7 @@ def get_analytics_drift(
         return compute_glucose_drift(
             readings,
             native_only=effective_native_only,
+            allowed_provenances=allowed_provenances,
             device_id=device_id,
         )
     except MultipleDevicesError as exc:
@@ -168,6 +174,7 @@ def get_analytics_meal_responses(
     end: datetime | None = Query(default=None),
     native_only: bool = Query(default=True),
     include_non_native: bool = Query(default=False),
+    allowed_provenances: list[str] | None = Query(default=None),
     device_id: str | None = Query(default=None),
 ) -> list[MealResponseItem]:
     patient = require_patient_access(patient_id, current_user, db, write=False)
@@ -201,6 +208,7 @@ def get_analytics_meal_responses(
             "cohort_type": patient.cohort_type,
             "actor_role": current_user.role,
             "native_only": effective_native_only,
+            "allowed_provenances": allowed_provenances,
             "device_id": device_id,
         },
     )
@@ -211,6 +219,7 @@ def get_analytics_meal_responses(
             meals,
             readings,
             native_only=effective_native_only,
+            allowed_provenances=allowed_provenances,
             device_id=device_id,
         )
     except MultipleDevicesError as exc:

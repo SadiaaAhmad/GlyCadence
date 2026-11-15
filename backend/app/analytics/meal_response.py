@@ -7,9 +7,16 @@ from app.analytics.baselines import (
     filter_and_count_provenance,
     filter_cgm_only,
     prepare_glucose_points_with_stats,
+    resolve_allowed_provenances,
     resolve_single_device_cgm_points,
 )
-from app.analytics.data_quality import DATE_SHIFTED_LIMITATION_NOTE, ensure_utc_dt
+from app.analytics.data_quality import (
+    ARCHIVE_ALIGNED_DISCLOSURE_NOTE,
+    DATASET_DOCUMENTED_DISCLOSURE_NOTE,
+    DATE_SHIFTED_LIMITATION_NOTE,
+    ensure_utc_dt,
+)
+from app.ingestion.common import DEFAULT_ALLOWED_PROVENANCES
 from app.models import GlucoseReading, Meal
 from app.schemas.analytics import (
     CALCULATION_VERSION,
@@ -64,6 +71,7 @@ def _evaluate_sliced_meal_window(
     window_points: Sequence[GlucosePoint],
     deduplicated_removed: int,
     native_only: bool,
+    allowed_provenances: Sequence[str] | set[str] | None,
     device_id: str | None,
     resolved_device_id: str | None,
     devices_present: list[str],
@@ -81,10 +89,17 @@ def _evaluate_sliced_meal_window(
     if not devices_present:
         devices_present = win_devs
 
-    points, prov_counts, excluded_non_native = filter_and_count_provenance(
-        cgm_window_device_points, native_only=native_only
+    allowed_list = resolve_allowed_provenances(
+        allowed_provenances=allowed_provenances,
+        native_only=native_only,
     )
-    filter_mode = "native_only" if native_only else "include_non_native"
+    is_strict_default = set(allowed_list) <= set(DEFAULT_ALLOWED_PROVENANCES)
+    points, prov_counts, excluded_non_native = filter_and_count_provenance(
+        cgm_window_device_points,
+        native_only=native_only,
+        allowed_provenances=allowed_list,
+    )
+    filter_mode = "native_only" if is_strict_default else "include_non_native"
 
     sem_set = {meal_timestamp_semantics, *(p.timestamp_semantics for p in window_points)}
     resolved_sem = "date_shifted_relative" if "date_shifted_relative" in sem_set else meal_timestamp_semantics
@@ -98,6 +113,10 @@ def _evaluate_sliced_meal_window(
 
     if not cal_comparable:
         uncertainty_notes.append(DATE_SHIFTED_LIMITATION_NOTE)
+    if "dataset_documented" in allowed_list and prov_counts.get("dataset_documented", 0) > 0:
+        uncertainty_notes.append(DATASET_DOCUMENTED_DISCLOSURE_NOTE)
+    if "archive_aligned" in allowed_list and prov_counts.get("archive_aligned", 0) > 0:
+        uncertainty_notes.append(ARCHIVE_ALIGNED_DISCLOSURE_NOTE)
     if excluded_non_cgm > 0:
         uncertainty_notes.append(
             f"Excluded {excluded_non_cgm} non-CGM reading(s) (e.g., cbg/fasting/pre_meal finger-stick observations) in meal window."
@@ -201,8 +220,9 @@ def _evaluate_sliced_meal_window(
             deduplicated_removed_count=deduplicated_removed,
             device_id=resolved_device_id,
             devices_present=devices_present,
-            native_only=native_only,
-            include_non_native=not native_only,
+            allowed_provenances=allowed_list,
+            native_only=is_strict_default,
+            include_non_native=not is_strict_default,
             provenance_filter_mode=filter_mode,
             post_meal_span_minutes=span_minutes,
             max_consecutive_gap_minutes=max_gap_min,
@@ -257,6 +277,18 @@ def _evaluate_sliced_meal_window(
     datasets = tuple(
         sorted({meal_source_dataset, anchor_point.source_dataset, *(p.source_dataset for p in post_points)})
     )
+    used_prov_counts: dict[str, int] = {
+        "native": 0,
+        "dataset_documented": 0,
+        "archive_aligned": 0,
+        "interpolated": 0,
+        "derived": 0,
+        "unknown": 0,
+    }
+    for p in (anchor_point, *post_points):
+        used_prov_counts[
+            p.observation_provenance if p.observation_provenance in used_prov_counts else "unknown"
+        ] += 1
 
     def _build_meal_ev(
         metric_name: str,
@@ -281,6 +313,8 @@ def _evaluate_sliced_meal_window(
             calculation_method=method,
             calculation_version=CALCULATION_VERSION,
             missingness_pct=missingness_pct,
+            allowed_provenances=tuple(allowed_list),
+            provenance_counts=used_prov_counts,
             uncertainty_notes=tuple(uncertainty_notes),
         )
 
@@ -328,8 +362,9 @@ def _evaluate_sliced_meal_window(
         deduplicated_removed_count=deduplicated_removed,
         device_id=resolved_device_id,
         devices_present=devices_present,
-        native_only=native_only,
-        include_non_native=not native_only,
+        allowed_provenances=allowed_list,
+        native_only=is_strict_default,
+        include_non_native=not is_strict_default,
         provenance_filter_mode=filter_mode,
         post_meal_span_minutes=span_minutes,
         max_consecutive_gap_minutes=max_gap_min,
@@ -353,6 +388,7 @@ def evaluate_single_meal_response(
     glucose_readings: Sequence[GlucoseReading | GlucosePoint | dict],
     meal_timestamp_semantics: str = "utc_exact",
     native_only: bool = True,
+    allowed_provenances: Sequence[str] | set[str] | None = None,
     device_id: str | None = None,
 ) -> MealResponseItem:
     """Compute postprandial excursion and strict positive trapezoidal iAUC for one meal.
@@ -405,6 +441,7 @@ def evaluate_single_meal_response(
         window_points=window_points,
         deduplicated_removed=deduplicated_removed,
         native_only=native_only,
+        allowed_provenances=allowed_provenances,
         device_id=device_id,
         resolved_device_id=resolved_device_id,
         devices_present=devices_present,
@@ -416,6 +453,7 @@ def evaluate_meal_responses(
     glucose_readings: Sequence[GlucoseReading | GlucosePoint | dict],
     *,
     native_only: bool = True,
+    allowed_provenances: Sequence[str] | set[str] | None = None,
     device_id: str | None = None,
 ) -> list[MealResponseItem]:
     """Evaluate postprandial responses across a sequence of meals using O(N log N + M log N) bisect slicing."""
@@ -473,6 +511,7 @@ def evaluate_meal_responses(
                 window_points=sliced_points,
                 deduplicated_removed=window_dedup_removed,
                 native_only=native_only,
+                allowed_provenances=allowed_provenances,
                 device_id=device_id,
                 resolved_device_id=resolved_device_id,
                 devices_present=devices_present,

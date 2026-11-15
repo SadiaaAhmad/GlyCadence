@@ -42,7 +42,18 @@ DEXCOM_G6_PRO_DEVICE = "Dexcom_G6_Pro"
 LIBRE_SAMPLING_MIN = 15
 DEXCOM_SAMPLING_MIN = 5
 
-VALID_PROVENANCES = {"native", "interpolated", "derived", "unknown"}
+VALID_PROVENANCES = {
+    "native",
+    "dataset_documented",
+    "archive_aligned",
+    "interpolated",
+    "derived",
+    "unknown",
+}
+CGMACROS_ARCHIVE_ALIGNMENT_NOTE = (
+    "PhysioNet CGMacros v1.0.0 (doi:10.13026/3z8q-x658) aligns FreeStyle Libre Pro (nominal 15-min) "
+    "and Dexcom G6 Pro (nominal 5-min) onto a 1-minute grid with linear interpolation between sensor samples."
+)
 
 
 def classify_cgmacros_glycemic_status(hba1c_pct: float | None, declared_type: str | None = None) -> str:
@@ -138,12 +149,14 @@ def _resolve_row_provenance(
     *,
     device_candidates: tuple[str, ...],
     source_verified_native_export: bool,
+    archive_aligned_export: bool = False,
 ) -> ObservationProvenanceType:
     """Resolve observation provenance strictly from verifiable source evidence.
 
     Never classifies a reading as ``'native'`` merely because its timestamp spacing
     matches the nominal sensor cadence (5 min or 15 min). Requires either an explicit
-    provenance field on the row or ``source_verified_native_export=True``.
+    provenance field on the row, ``source_verified_native_export=True``, or
+    ``archive_aligned_export=True`` (for the 1-minute aligned PhysioNet CGMacros release).
     """
     raw_prov = _extract_col(
         row,
@@ -153,7 +166,11 @@ def _resolve_row_provenance(
         cleaned = str(raw_prov).strip().lower()
         if cleaned in VALID_PROVENANCES:
             return cleaned  # type: ignore[return-value]
-    return "native" if source_verified_native_export else "unknown"
+    if source_verified_native_export:
+        return "native"
+    if archive_aligned_export:
+        return "archive_aligned"
+    return "unknown"
 
 
 def _resolve_checksums(
@@ -198,6 +215,7 @@ def ingest_cgmacros(
     source_url: str = DEFAULT_SOURCE_URL,
     preprocessing_version: str = PREPROCESSING_VERSION,
     source_verified_native_export: bool = False,
+    archive_aligned_export: bool = False,
     native_evidence_reference: str | None = None,
     participant_consent_version: str | None = None,
     extra_quality_metadata: dict[str, Any] | None = None,
@@ -257,7 +275,14 @@ def ingest_cgmacros(
 
     participants_ingested = 0
     excluded_non_t2d: list[str] = []
-    provenance_counts: dict[str, int] = {"native": 0, "interpolated": 0, "derived": 0, "unknown": 0}
+    provenance_counts: dict[str, int] = {
+        "native": 0,
+        "dataset_documented": 0,
+        "archive_aligned": 0,
+        "interpolated": 0,
+        "derived": 0,
+        "unknown": 0,
+    }
 
     for raw_ext_id, ts_source in participant_sources.items():
         ext_id = _format_subject_id(raw_ext_id)
@@ -440,6 +465,7 @@ def ingest_cgmacros(
                             row,
                             device_candidates=("libre provenance", "libre_provenance"),
                             source_verified_native_export=source_verified_native_export,
+                            archive_aligned_export=archive_aligned_export,
                         )
                         provenance_counts[prov] = provenance_counts.get(prov, 0) + 1
                         glucose_batch.append(
@@ -491,6 +517,7 @@ def ingest_cgmacros(
                             row,
                             device_candidates=("dexcom provenance", "dexcom_provenance"),
                             source_verified_native_export=source_verified_native_export,
+                            archive_aligned_export=archive_aligned_export,
                         )
                         provenance_counts[prov] = provenance_counts.get(prov, 0) + 1
                         glucose_batch.append(
@@ -615,6 +642,7 @@ def ingest_cgmacros(
         "timestamp_semantics": "date_shifted_relative",
         "timezone_basis": "not_applicable_relative",
         "source_verified_native_export": source_verified_native_export,
+        "archive_aligned_export": archive_aligned_export,
         "native_evidence_reference": cleaned_evidence_ref,
         "observation_provenance_counts": provenance_counts,
     }
@@ -636,6 +664,7 @@ def ingest_cgmacros(
             "dataset_version": dataset_version,
             "dataset_doi": dataset_doi,
             "source_verified_native_export": source_verified_native_export,
+            "archive_aligned_export": archive_aligned_export,
             "native_evidence_reference": cleaned_evidence_ref,
         },
     )
@@ -674,9 +703,15 @@ def ingest_cgmacros_archive(
     dataset_doi: str = DEFAULT_DATASET_DOI,
     source_url: str = DEFAULT_SOURCE_URL,
     source_verified_native_export: bool = False,
-    native_evidence_reference: str | None = None,
+    archive_aligned_export: bool = True,
+    native_evidence_reference: str | None = CGMACROS_ARCHIVE_ALIGNMENT_NOTE,
 ) -> IngestionSummary:
-    """Safely extract a CGMacros ZIP archive and ingest bio.csv and participant CSVs."""
+    """Safely extract a CGMacros ZIP archive and ingest bio.csv and participant CSVs.
+
+    Defaults to ``archive_aligned_export=True`` because the PhysioNet CGMacros v1.0.0 CSVs
+    align 15-min FreeStyle Libre Pro and 5-min Dexcom G6 Pro onto a 1-minute grid using linear
+    interpolation between sensor samples.
+    """
     arch = Path(archive_path)
     archive_sha256 = compute_source_file_checksum(arch)
     with tempfile.TemporaryDirectory(prefix="glycadence_cgmacros_") as tmp_dir:
@@ -712,6 +747,7 @@ def ingest_cgmacros_archive(
             dataset_doi=dataset_doi,
             source_url=source_url,
             source_verified_native_export=source_verified_native_export,
+            archive_aligned_export=archive_aligned_export,
             native_evidence_reference=native_evidence_reference,
             extra_quality_metadata={
                 "archive_sha256": archive_sha256,

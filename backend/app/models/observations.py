@@ -102,7 +102,7 @@ class GlucoseReading(Base):
             name="ck_glucose_timezone_basis",
         ),
         CheckConstraint(
-            "observation_provenance IN ('native', 'interpolated', 'derived', 'unknown')",
+            "observation_provenance IN ('native', 'dataset_documented', 'archive_aligned', 'interpolated', 'derived', 'unknown')",
             name="ck_glucose_observation_provenance",
         ),
         Index("idx_glucose_patient_time", "patient_id", text("recorded_at DESC")),

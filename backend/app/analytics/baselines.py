@@ -6,6 +6,7 @@ from typing import Sequence
 import numpy as np
 
 from app.analytics.data_quality import compute_cgm_coverage, ensure_utc_dt
+from app.ingestion.common import ALL_OBSERVATION_PROVENANCES, DEFAULT_ALLOWED_PROVENANCES
 from app.models import GlucoseReading
 from app.schemas.analytics import (
     CALCULATION_VERSION,
@@ -172,23 +173,52 @@ def resolve_single_device_cgm_points(
     return list(cgm_points), resolved_device, devices_present
 
 
+def resolve_allowed_provenances(
+    *,
+    allowed_provenances: Sequence[str] | set[str] | None = None,
+    native_only: bool = True,
+) -> list[str]:
+    """Resolve the active provenance set (default = {'native', 'dataset_documented'})."""
+    if allowed_provenances is not None:
+        return sorted({str(x).strip().lower() for x in allowed_provenances})
+    if not native_only:
+        return sorted(ALL_OBSERVATION_PROVENANCES)
+    return sorted(DEFAULT_ALLOWED_PROVENANCES)
+
+
 def filter_and_count_provenance(
     points: Sequence[GlucosePoint],
     *,
     native_only: bool = True,
+    allowed_provenances: Sequence[str] | set[str] | None = None,
 ) -> tuple[list[GlucosePoint], dict[str, int], int]:
-    """Count observation provenance categories and optionally filter to verified native readings."""
-    counts: dict[str, int] = {"native": 0, "interpolated": 0, "derived": 0, "unknown": 0}
+    """Count observation provenance categories and filter to the allowed provenance set."""
+    counts: dict[str, int] = {
+        "native": 0,
+        "dataset_documented": 0,
+        "archive_aligned": 0,
+        "interpolated": 0,
+        "derived": 0,
+        "unknown": 0,
+    }
     for p in points:
         prov = p.observation_provenance if p.observation_provenance in counts else "unknown"
         counts[prov] += 1
 
-    if not native_only:
-        return list(points), counts, 0
-
-    native_pts = [p for p in points if p.observation_provenance == "native"]
-    excluded = len(points) - len(native_pts)
-    return native_pts, counts, excluded
+    allowed_set = set(
+        resolve_allowed_provenances(
+            allowed_provenances=allowed_provenances,
+            native_only=native_only,
+        )
+    )
+    filtered_pts = [
+        p
+        for p in points
+        if (p.observation_provenance if p.observation_provenance in counts else "unknown")
+        in allowed_set
+    ]
+    excluded = len(points) - len(filtered_pts)
+    return filtered_pts, counts, excluded
 
 
 def compute_glucose_summary(
@@ -198,6 +228,7 @@ def compute_glucose_summary(
     window_end: datetime | None = None,
     default_interval_min: int = 15,
     native_only: bool = True,
+    allowed_provenances: Sequence[str] | set[str] | None = None,
     device_id: str | None = None,
     timezone_name: str | None = None,
 ) -> GlucoseSummaryOut:
@@ -224,10 +255,17 @@ def compute_glucose_summary(
     device_points, resolved_device_id, devices_present = resolve_single_device_cgm_points(
         cgm_points, device_id=device_id
     )
-    points, prov_counts, excluded_non_native = filter_and_count_provenance(
-        device_points, native_only=native_only
+    allowed_list = resolve_allowed_provenances(
+        allowed_provenances=allowed_provenances,
+        native_only=native_only,
     )
-    filter_mode = "native_only" if native_only else "include_non_native"
+    is_strict_default = set(allowed_list) <= set(DEFAULT_ALLOWED_PROVENANCES)
+    points, prov_counts, excluded_non_native = filter_and_count_provenance(
+        device_points,
+        native_only=native_only,
+        allowed_provenances=allowed_list,
+    )
+    filter_mode = "native_only" if is_strict_default else "include_non_native"
 
     coverage = compute_cgm_coverage(
         [p.recorded_at for p in points],
@@ -241,7 +279,8 @@ def compute_glucose_summary(
         deduplicated_removed_count=dedup_removed,
         device_id=resolved_device_id,
         devices_present=devices_present,
-        native_only=native_only,
+        native_only=is_strict_default,
+        allowed_provenances=allowed_list,
         timestamp_semantics=sem_list,
         timezone_basis=tz_basis_list,
         timezone_name=timezone_name,
@@ -254,6 +293,8 @@ def compute_glucose_summary(
             window_end=coverage.window_end,
             observation_count=0,
             native_observation_count=prov_counts["native"],
+            dataset_documented_observation_count=prov_counts["dataset_documented"],
+            archive_aligned_observation_count=prov_counts["archive_aligned"],
             interpolated_observation_count=prov_counts["interpolated"],
             derived_observation_count=prov_counts["derived"],
             unknown_observation_count=prov_counts["unknown"],
@@ -262,8 +303,9 @@ def compute_glucose_summary(
             deduplicated_removed_count=dedup_removed,
             device_id=resolved_device_id,
             devices_present=devices_present,
-            native_only=native_only,
-            include_non_native=not native_only,
+            allowed_provenances=allowed_list,
+            native_only=is_strict_default,
+            include_non_native=not is_strict_default,
             provenance_filter_mode=filter_mode,
             timestamp_semantics=coverage.timestamp_semantics,
             timezone_basis=coverage.timezone_basis,
@@ -320,6 +362,18 @@ def compute_glucose_summary(
     ]
     src_meta = build_source_records_metadata(full_source_refs)
     uncertainty_tuple = tuple(coverage.uncertainty_notes)
+    used_prov_counts: dict[str, int] = {
+        "native": 0,
+        "dataset_documented": 0,
+        "archive_aligned": 0,
+        "interpolated": 0,
+        "derived": 0,
+        "unknown": 0,
+    }
+    for p in points:
+        used_prov_counts[
+            p.observation_provenance if p.observation_provenance in used_prov_counts else "unknown"
+        ] += 1
 
     common_ev_kwargs = {
         "observation_count": n,
@@ -330,6 +384,8 @@ def compute_glucose_summary(
         **src_meta,
         "calculation_version": CALCULATION_VERSION,
         "missingness_pct": coverage.period_missingness_pct,
+        "allowed_provenances": tuple(allowed_list),
+        "provenance_counts": used_prov_counts,
         "uncertainty_notes": uncertainty_tuple,
     }
 
@@ -397,6 +453,8 @@ def compute_glucose_summary(
         window_end=coverage.window_end,
         observation_count=n,
         native_observation_count=prov_counts["native"],
+        dataset_documented_observation_count=prov_counts["dataset_documented"],
+        archive_aligned_observation_count=prov_counts["archive_aligned"],
         interpolated_observation_count=prov_counts["interpolated"],
         derived_observation_count=prov_counts["derived"],
         unknown_observation_count=prov_counts["unknown"],
@@ -405,8 +463,9 @@ def compute_glucose_summary(
         deduplicated_removed_count=dedup_removed,
         device_id=resolved_device_id,
         devices_present=devices_present,
-        native_only=native_only,
-        include_non_native=not native_only,
+        allowed_provenances=allowed_list,
+        native_only=is_strict_default,
+        include_non_native=not is_strict_default,
         provenance_filter_mode=filter_mode,
         timestamp_semantics=coverage.timestamp_semantics,
         timezone_basis=coverage.timezone_basis,

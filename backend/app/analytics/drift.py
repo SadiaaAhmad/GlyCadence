@@ -8,9 +8,11 @@ from app.analytics.baselines import (
     filter_and_count_provenance,
     filter_cgm_only,
     prepare_glucose_points_with_stats,
+    resolve_allowed_provenances,
     resolve_single_device_cgm_points,
 )
 from app.analytics.data_quality import compute_cgm_coverage, compute_deterministic_confidence
+from app.ingestion.common import DEFAULT_ALLOWED_PROVENANCES
 from app.models import GlucoseReading
 from app.schemas.analytics import (
     CALCULATION_VERSION,
@@ -32,6 +34,7 @@ def compute_glucose_drift(
     *,
     split_ratio: float = 0.67,
     native_only: bool = True,
+    allowed_provenances: Sequence[str] | set[str] | None = None,
     device_id: str | None = None,
 ) -> DriftSummaryOut:
     """Compute exploratory descriptive comparison between personal baseline and recent windows.
@@ -47,10 +50,17 @@ def compute_glucose_drift(
     cgm_points, resolved_device_id, devices_present = resolve_single_device_cgm_points(
         cgm_points_all, device_id=device_id
     )
-    points, prov_counts, excluded_non_native = filter_and_count_provenance(
-        cgm_points, native_only=native_only
+    allowed_list = resolve_allowed_provenances(
+        allowed_provenances=allowed_provenances,
+        native_only=native_only,
     )
-    filter_mode = "native_only" if native_only else "include_non_native"
+    is_strict_default = set(allowed_list) <= set(DEFAULT_ALLOWED_PROVENANCES)
+    points, prov_counts, excluded_non_native = filter_and_count_provenance(
+        cgm_points,
+        native_only=native_only,
+        allowed_provenances=allowed_list,
+    )
+    filter_mode = "native_only" if is_strict_default else "include_non_native"
     n = len(points)
     if n < 10:
         now = datetime.now(timezone.utc)
@@ -81,8 +91,9 @@ def compute_glucose_drift(
             deduplicated_removed_count=deduplicated_removed,
             device_id=resolved_device_id,
             devices_present=devices_present,
-            native_only=native_only,
-            include_non_native=not native_only,
+            allowed_provenances=allowed_list,
+            native_only=is_strict_default,
+            include_non_native=not is_strict_default,
             provenance_filter_mode=filter_mode,
             statistical_note=SERIAL_CORRELATION_DISCLAIMER,
             deterministic_confidence=0.0,
@@ -131,7 +142,8 @@ def compute_glucose_drift(
         deduplicated_removed_count=deduplicated_removed,
         device_id=resolved_device_id,
         devices_present=devices_present,
-        native_only=native_only,
+        native_only=is_strict_default,
+        allowed_provenances=allowed_list,
         timestamp_semantics=sem_list,
     )
 
@@ -153,6 +165,18 @@ def compute_glucose_drift(
         for p in points
     )
     src_meta = build_source_records_metadata(all_source_refs)
+    used_prov_counts: dict[str, int] = {
+        "native": 0,
+        "dataset_documented": 0,
+        "archive_aligned": 0,
+        "interpolated": 0,
+        "derived": 0,
+        "unknown": 0,
+    }
+    for p in points:
+        used_prov_counts[
+            p.observation_provenance if p.observation_provenance in used_prov_counts else "unknown"
+        ] += 1
 
     evidence = EvidenceItem(
         metric_name="exploratory_glucose_window_shift_mg_dl",
@@ -169,6 +193,8 @@ def compute_glucose_drift(
         calculation_method="exploratory_descriptive_window_comparison",
         calculation_version=CALCULATION_VERSION,
         missingness_pct=overall_cov.period_missingness_pct,
+        allowed_provenances=tuple(allowed_list),
+        provenance_counts=used_prov_counts,
         uncertainty_notes=tuple(notes),
     )
 
@@ -189,8 +215,9 @@ def compute_glucose_drift(
         deduplicated_removed_count=deduplicated_removed,
         device_id=resolved_device_id,
         devices_present=devices_present,
-        native_only=native_only,
-        include_non_native=not native_only,
+        allowed_provenances=allowed_list,
+        native_only=is_strict_default,
+        include_non_native=not is_strict_default,
         provenance_filter_mode=filter_mode,
         baseline_coverage_pct=base_cov.period_coverage_pct,
         recent_coverage_pct=rec_cov.period_coverage_pct,

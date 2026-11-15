@@ -55,24 +55,32 @@ def run_archive_ingestion(
     try:
         ds = dataset.strip().lower()
         if ds in {"shanghai", "shanghai_t2dm"}:
+            sh_kwargs: dict[str, Any] = {
+                "dataset_version": dataset_version or SHANGHAI_VERSION,
+                "dataset_doi": dataset_doi or SHANGHAI_DOI,
+                "source_url": source_url or SHANGHAI_URL,
+                "source_verified_native_export": source_verified_native_export,
+            }
+            if native_evidence_reference is not None:
+                sh_kwargs["native_evidence_reference"] = native_evidence_reference
             summary = ingest_shanghai_t2dm_archive(
                 db,
                 archive_path,
-                dataset_version=dataset_version or SHANGHAI_VERSION,
-                dataset_doi=dataset_doi or SHANGHAI_DOI,
-                source_url=source_url or SHANGHAI_URL,
-                source_verified_native_export=source_verified_native_export,
-                native_evidence_reference=native_evidence_reference,
+                **sh_kwargs,
             )
         elif ds == "cgmacros":
+            cg_kwargs: dict[str, Any] = {
+                "dataset_version": dataset_version or CGMACROS_VERSION,
+                "dataset_doi": dataset_doi or CGMACROS_DOI,
+                "source_url": source_url or CGMACROS_URL,
+                "source_verified_native_export": source_verified_native_export,
+            }
+            if native_evidence_reference is not None:
+                cg_kwargs["native_evidence_reference"] = native_evidence_reference
             summary = ingest_cgmacros_archive(
                 db,
                 archive_path,
-                dataset_version=dataset_version or CGMACROS_VERSION,
-                dataset_doi=dataset_doi or CGMACROS_DOI,
-                source_url=source_url or CGMACROS_URL,
-                source_verified_native_export=source_verified_native_export,
-                native_evidence_reference=native_evidence_reference,
+                **cg_kwargs,
             )
         else:
             raise ValueError(f"Unsupported dataset: {dataset!r}. Expected 'shanghai' or 'cgmacros'.")

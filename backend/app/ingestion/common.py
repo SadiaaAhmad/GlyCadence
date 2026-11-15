@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 MMOL_L_TO_MG_DL = 18.0182
 MIN_PHYSIOLOGICAL_GLUCOSE_MG_DL = 10.0
 MAX_PHYSIOLOGICAL_GLUCOSE_MG_DL = 1500.0
-PREPROCESSING_VERSION = "v1.2.0"
+PREPROCESSING_VERSION = "v1.3.0"
 
 TimestampSemanticsType = Literal["utc_exact", "real_world_local", "date_shifted_relative"]
 TimezoneBasisType = Literal[
@@ -21,7 +21,23 @@ TimezoneBasisType = Literal[
     "unknown",
     "not_applicable_relative",
 ]
-ObservationProvenanceType = Literal["native", "interpolated", "derived", "unknown"]
+ObservationProvenanceType = Literal[
+    "native",
+    "dataset_documented",
+    "archive_aligned",
+    "interpolated",
+    "derived",
+    "unknown",
+]
+ALL_OBSERVATION_PROVENANCES: tuple[ObservationProvenanceType, ...] = (
+    "native",
+    "dataset_documented",
+    "archive_aligned",
+    "interpolated",
+    "derived",
+    "unknown",
+)
+DEFAULT_ALLOWED_PROVENANCES: frozenset[str] = frozenset({"native", "dataset_documented"})
 
 MISSING_SENTINELS = {
     "",
