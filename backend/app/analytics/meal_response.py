@@ -1,6 +1,7 @@
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
-from typing import Sequence
+import statistics
+from typing import Literal, Sequence
 
 from app.analytics.baselines import (
     GlucosePoint,
@@ -72,6 +73,7 @@ def _evaluate_sliced_meal_window(
     deduplicated_removed: int,
     native_only: bool,
     allowed_provenances: Sequence[str] | set[str] | None,
+    baseline_method: Literal["nearest_anchor", "pre_window_median"] = "nearest_anchor",
     device_id: str | None,
     resolved_device_id: str | None,
     devices_present: list[str],
@@ -181,7 +183,12 @@ def _evaluate_sliced_meal_window(
                 f"Maximum consecutive sampling gap is {max_gap_min:.1f} min (>30.0 min limit); large gaps are never interpolated."
             )
 
-    pre_val = round(anchor_point.glucose_mg_dl, 2) if anchor_point else None
+    if baseline_method == "pre_window_median" and pre_candidates:
+        g0 = float(statistics.median(p.glucose_mg_dl for p in pre_candidates))
+        pre_val: float | None = round(g0, 2)
+    else:
+        g0 = anchor_point.glucose_mg_dl if anchor_point else 0.0
+        pre_val = round(anchor_point.glucose_mg_dl, 2) if anchor_point else None
     peak_post = round(max(p.glucose_mg_dl for p in post_points), 2) if post_points else None
     excursion_delta = (
         round(peak_post - pre_val, 2)
@@ -209,6 +216,7 @@ def _evaluate_sliced_meal_window(
             carbs_g=carbs_g,
             timestamp_semantics=resolved_sem,
             calendar_date_comparable=cal_comparable,
+            baseline_method=baseline_method,
             pre_meal_glucose_mg_dl=pre_val,
             pre_meal_recorded_at=anchor_point.recorded_at if anchor_point else None,
             peak_post_meal_glucose_mg_dl=peak_post,
@@ -234,7 +242,6 @@ def _evaluate_sliced_meal_window(
             evidence_items=[],
         )
 
-    g0 = anchor_point.glucose_mg_dl
     vertices_t = [0.0, *post_times_min]
     vertices_pos_g = [0.0, *[max(p.glucose_mg_dl - g0, 0.0) for p in post_points]]
 
@@ -318,11 +325,19 @@ def _evaluate_sliced_meal_window(
             uncertainty_notes=tuple(uncertainty_notes),
         )
 
+    iauc_method_str = f"{IAUC_CALCULATION_METHOD}_{baseline_method}"
+    baseline_method_str = (
+        "pre_window_median_within_30m"
+        if baseline_method == "pre_window_median"
+        else "nearest_pre_meal_anchor_within_30m"
+    )
+    peak_method_str = f"post_meal_peak_minus_pre_meal_{baseline_method}"
+
     ev_iauc = _build_meal_ev(
         "postprandial_iauc_mg_dl_min",
         iauc_rounded,
         "mg/dL*min",
-        IAUC_CALCULATION_METHOD,
+        iauc_method_str,
         baseline_value=None,
         delta_val=None,
     )
@@ -330,7 +345,7 @@ def _evaluate_sliced_meal_window(
         "pre_meal_baseline_glucose_mg_dl",
         pre_val,
         "mg/dL",
-        "nearest_pre_meal_anchor_within_30m",
+        baseline_method_str,
         baseline_value=pre_val,
         delta_val=None,
     )
@@ -338,7 +353,7 @@ def _evaluate_sliced_meal_window(
         "postprandial_peak_excursion_mg_dl",
         peak_post,
         "mg/dL",
-        "post_meal_peak_minus_pre_meal_anchor",
+        peak_method_str,
         baseline_value=pre_val,
         delta_val=excursion_delta,
     )
@@ -351,6 +366,7 @@ def _evaluate_sliced_meal_window(
         carbs_g=carbs_g,
         timestamp_semantics=resolved_sem,
         calendar_date_comparable=cal_comparable,
+        baseline_method=baseline_method,
         pre_meal_glucose_mg_dl=pre_val,
         pre_meal_recorded_at=anchor_point.recorded_at,
         peak_post_meal_glucose_mg_dl=peak_post,
@@ -389,6 +405,7 @@ def evaluate_single_meal_response(
     meal_timestamp_semantics: str = "utc_exact",
     native_only: bool = True,
     allowed_provenances: Sequence[str] | set[str] | None = None,
+    baseline_method: Literal["nearest_anchor", "pre_window_median"] = "nearest_anchor",
     device_id: str | None = None,
 ) -> MealResponseItem:
     """Compute postprandial excursion and strict positive trapezoidal iAUC for one meal.
@@ -442,6 +459,7 @@ def evaluate_single_meal_response(
         deduplicated_removed=deduplicated_removed,
         native_only=native_only,
         allowed_provenances=allowed_provenances,
+        baseline_method=baseline_method,
         device_id=device_id,
         resolved_device_id=resolved_device_id,
         devices_present=devices_present,
@@ -454,6 +472,7 @@ def evaluate_meal_responses(
     *,
     native_only: bool = True,
     allowed_provenances: Sequence[str] | set[str] | None = None,
+    baseline_method: Literal["nearest_anchor", "pre_window_median"] = "nearest_anchor",
     device_id: str | None = None,
 ) -> list[MealResponseItem]:
     """Evaluate postprandial responses across a sequence of meals using O(N log N + M log N) bisect slicing."""
@@ -512,6 +531,7 @@ def evaluate_meal_responses(
                 deduplicated_removed=window_dedup_removed,
                 native_only=native_only,
                 allowed_provenances=allowed_provenances,
+                baseline_method=baseline_method,
                 device_id=device_id,
                 resolved_device_id=resolved_device_id,
                 devices_present=devices_present,

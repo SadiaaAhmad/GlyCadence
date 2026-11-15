@@ -529,7 +529,7 @@ def test_group_c_iauc_anchor_gap_chain_and_boundary_cases():
     assert res_30m.evidence is not None
     assert (
         res_30m.evidence.calculation_method
-        == "timestamp_positive_trapezoidal_iauc_from_meal_t0_with_anchor_gap_chain"
+        == "timestamp_positive_trapezoidal_iauc_from_meal_t0_with_anchor_gap_chain_nearest_anchor"
     )
     # Hand-computed reference from t=0 (meal timestamp with zero excursion):
     # [0, 20]: 0.5*(0+40)*20 = 400
@@ -1275,3 +1275,79 @@ def test_decision_a_provenance_tiers_allowed_set_and_evidence_disclosure(tmp_pat
         db.close()
         outer_tx.rollback()
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Decision B — baseline_method ('nearest_anchor' vs 'pre_window_median') & CALCULATION_VERSION = 'v1.6.0'
+# ---------------------------------------------------------------------------
+
+
+def test_decision_b_baseline_method_nearest_anchor_vs_pre_window_median_and_v1_6_0():
+    from app.analytics import evaluate_meal_responses, evaluate_single_meal_response
+    from app.schemas.analytics import CALCULATION_VERSION
+
+    assert CALCULATION_VERSION == "v1.6.0"
+
+    t_meal = datetime(2026, 6, 15, 12, 0, tzinfo=timezone.utc)
+    # Pre-meal readings in [-30m, 0m]:
+    #   -25m: 90.0 mg/dL
+    #   -15m: 100.0 mg/dL
+    #   -5m:  125.0 mg/dL  (nearest_anchor = 125.0 mg/dL; pre_window_median = 100.0 mg/dL)
+    # Post-meal readings in (0, +180m]:
+    #   +15m, +30m, +60m, +90m, +120m all at 140.0 mg/dL
+    readings = [
+        {"id": "pre-1", "recorded_at": t_meal - timedelta(minutes=25), "glucose_mg_dl": 90.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+        {"id": "pre-2", "recorded_at": t_meal - timedelta(minutes=15), "glucose_mg_dl": 100.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+        {"id": "pre-3", "recorded_at": t_meal - timedelta(minutes=5), "glucose_mg_dl": 125.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+        {"id": "post-1", "recorded_at": t_meal + timedelta(minutes=15), "glucose_mg_dl": 140.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+        {"id": "post-2", "recorded_at": t_meal + timedelta(minutes=30), "glucose_mg_dl": 140.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+        {"id": "post-3", "recorded_at": t_meal + timedelta(minutes=60), "glucose_mg_dl": 140.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+        {"id": "post-4", "recorded_at": t_meal + timedelta(minutes=90), "glucose_mg_dl": 140.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+        {"id": "post-5", "recorded_at": t_meal + timedelta(minutes=120), "glucose_mg_dl": 140.0, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"},
+    ]
+
+    # 1. Default baseline_method == 'nearest_anchor' (pre = 125.0, delta = +15.0)
+    res_nearest = evaluate_single_meal_response(
+        meal_id="meal-b-nearest",
+        logged_at=t_meal,
+        meal_type="lunch",
+        description="Rice bowl",
+        carbs_g=50.0,
+        meal_source_dataset="shanghai_t2dm",
+        glucose_readings=readings,
+    )
+    assert res_nearest.baseline_method == "nearest_anchor"
+    assert res_nearest.pre_meal_glucose_mg_dl == 125.0
+    assert res_nearest.excursion_delta_mg_dl == 15.0
+    assert res_nearest.evidence is not None
+    assert res_nearest.evidence.calculation_version == "v1.6.0"
+    assert "nearest_anchor" in res_nearest.evidence.calculation_method
+
+    # 2. Explicit baseline_method == 'pre_window_median' (pre = 100.0, delta = +40.0)
+    res_median = evaluate_single_meal_response(
+        meal_id="meal-b-median",
+        logged_at=t_meal,
+        meal_type="lunch",
+        description="Rice bowl",
+        carbs_g=50.0,
+        meal_source_dataset="shanghai_t2dm",
+        glucose_readings=readings,
+        baseline_method="pre_window_median",
+    )
+    assert res_median.baseline_method == "pre_window_median"
+    assert res_median.pre_meal_glucose_mg_dl == 100.0
+    assert res_median.excursion_delta_mg_dl == 40.0
+    assert res_median.iauc_mg_dl_min > res_nearest.iauc_mg_dl_min
+    assert res_median.evidence is not None
+    assert res_median.evidence.calculation_version == "v1.6.0"
+    assert "pre_window_median" in res_median.evidence.calculation_method
+
+    # 3. evaluate_meal_responses also accepts baseline_method
+    batch_median = evaluate_meal_responses(
+        [{"id": "meal-b-batch", "logged_at": t_meal, "meal_type": "lunch", "description": "Rice bowl", "carbs_g": 50.0, "source_dataset": "shanghai_t2dm"}],
+        readings,
+        baseline_method="pre_window_median",
+    )
+    assert batch_median[0].baseline_method == "pre_window_median"
+    assert batch_median[0].pre_meal_glucose_mg_dl == 100.0
+

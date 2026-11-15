@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -175,6 +175,9 @@ def get_analytics_meal_responses(
     native_only: bool = Query(default=True),
     include_non_native: bool = Query(default=False),
     allowed_provenances: list[str] | None = Query(default=None),
+    baseline_method: Literal["nearest_anchor", "pre_window_median"] = Query(
+        default="nearest_anchor"
+    ),
     device_id: str | None = Query(default=None),
 ) -> list[MealResponseItem]:
     patient = require_patient_access(patient_id, current_user, db, write=False)
@@ -209,6 +212,7 @@ def get_analytics_meal_responses(
             "actor_role": current_user.role,
             "native_only": effective_native_only,
             "allowed_provenances": allowed_provenances,
+            "baseline_method": baseline_method,
             "device_id": device_id,
         },
     )
@@ -220,6 +224,7 @@ def get_analytics_meal_responses(
             readings,
             native_only=effective_native_only,
             allowed_provenances=allowed_provenances,
+            baseline_method=baseline_method,
             device_id=device_id,
         )
     except MultipleDevicesError as exc:

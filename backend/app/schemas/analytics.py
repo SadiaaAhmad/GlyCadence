@@ -4,7 +4,7 @@ from typing import Literal, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CALCULATION_VERSION = "v1.5.0"
+CALCULATION_VERSION = "v1.6.0"
 MAX_EVIDENCE_SOURCE_RECORDS = 200
 
 
@@ -178,6 +178,7 @@ class MealResponseItem(BaseModel):
     carbs_g: float | None
     timestamp_semantics: str = "utc_exact"
     calendar_date_comparable: bool = True
+    baseline_method: Literal["nearest_anchor", "pre_window_median"] = "nearest_anchor"
     pre_meal_glucose_mg_dl: float | None
     pre_meal_recorded_at: datetime | None
     peak_post_meal_glucose_mg_dl: float | None
