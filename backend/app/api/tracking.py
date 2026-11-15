@@ -4,6 +4,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.audit import record_audit_event
@@ -64,19 +65,6 @@ def create_glucose_reading(
 ) -> GlucoseReading:
     patient = require_patient_access(patient_id, current_user, db, write=True)
 
-    if idempotency_key:
-        existing = db.execute(
-            select(GlucoseReading).where(
-                GlucoseReading.patient_id == patient.id,
-                GlucoseReading.idempotency_key == idempotency_key,
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return existing
-
-    glucose_mg_dl = (
-        payload.raw_value if payload.raw_unit == "mg/dL" else round(payload.raw_value * 18.0182, 2)
-    )
     # Explicit provenance for manual user entries ("as entered by the user, not interpolated"):
     # Non-CGM point readings (fasting, pre_meal, post_meal, bedtime, cbg) are never native CGM.
     # For manual CGM entries, 'native' denotes "as entered directly by the user, not interpolated".
@@ -93,6 +81,37 @@ def create_glucose_reading(
             )
         explicit_provenance = payload.observation_provenance or "unknown"
 
+    glucose_mg_dl = (
+        payload.raw_value if payload.raw_unit == "mg/dL" else round(payload.raw_value * 18.0182, 2)
+    )
+
+    if idempotency_key:
+        existing = db.execute(
+            select(GlucoseReading).where(
+                GlucoseReading.patient_id == patient.id,
+                GlucoseReading.idempotency_key == idempotency_key,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            same_payload = (
+                existing.recorded_at == payload.recorded_at
+                and round(float(existing.raw_value), 4) == round(float(payload.raw_value), 4)
+                and existing.raw_unit == payload.raw_unit
+                and existing.reading_type == payload.reading_type
+                and existing.device_id == payload.device_id
+                and existing.sampling_interval_min == payload.sampling_interval_min
+                and existing.observation_provenance == explicit_provenance
+            )
+            if not same_payload:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "idempotency_key_payload_mismatch",
+                        "message": "Idempotency-Key was already used with a different request payload.",
+                    },
+                )
+            return existing
+
     row = GlucoseReading(
         patient_id=patient.id,
         cohort_type=patient.cohort_type,
@@ -108,17 +127,27 @@ def create_glucose_reading(
         idempotency_key=idempotency_key,
     )
     db.add(row)
-    db.flush()
-    record_audit_event(
-        db,
-        action="create_log",
-        resource_type="glucose_reading",
-        actor_user_id=current_user.id,
-        patient_id=patient.id,
-        resource_id=str(row.id),
-        request=request,
-    )
-    db.commit()
+    try:
+        db.flush()
+        record_audit_event(
+            db,
+            action="create_log",
+            resource_type="glucose_reading",
+            actor_user_id=current_user.id,
+            patient_id=patient.id,
+            resource_id=str(row.id),
+            request=request,
+        )
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "duplicate_glucose_reading",
+                "message": "A glucose reading with the same patient, timestamp, reading_type, and device_id already exists.",
+            },
+        ) from exc
     db.refresh(row)
     return row
 

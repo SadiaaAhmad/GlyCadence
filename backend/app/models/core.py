@@ -109,6 +109,7 @@ class Patient(Base):
         JSONB, nullable=False, server_default=text("'[]'::jsonb")
     )
     cultural_cuisine_pref: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
     consent_granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     consent_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     consent_granted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

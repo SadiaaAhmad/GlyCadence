@@ -1,8 +1,9 @@
 from collections import Counter, defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone, tzinfo
 import math
 from typing import Sequence
 
+from app.ingestion.common import resolve_iana_tz
 from app.schemas.analytics import CGMCoverageReport, DailyCoverageItem
 
 ENGINEERING_COVERAGE_THRESHOLD_PCT = 70.0
@@ -67,6 +68,7 @@ def compute_cgm_coverage(
     native_only: bool = True,
     timestamp_semantics: Sequence[str] | None = None,
     timezone_basis: Sequence[str] | None = None,
+    timezone_name: str | None = None,
 ) -> CGMCoverageReport:
     """Compute monitoring-period coverage and daily coverage with explicit thresholds and provenance."""
     unique_sorted = sorted(set(ensure_utc_dt(t) for t in timestamps))
@@ -164,37 +166,81 @@ def compute_cgm_coverage(
     in_window = [t for t in unique_sorted if w_start <= t <= w_end]
     observed_count = len(in_window)
 
-    start_date: date = w_start.date()
-    end_date: date = w_end.date()
-    counts_by_day: dict[date, int] = defaultdict(int)
-    for t in in_window:
-        counts_by_day[t.date()] += 1
-
-    total_calendar_days = (end_date - start_date).days + 1
     daily_items: list[DailyCoverageItem] = []
     partial_days = 0
     full_days = 0
 
-    for d_offset in range(total_calendar_days):
-        cur_date = start_date + timedelta(days=d_offset)
-        obs_day = counts_by_day.get(cur_date, 0)
-        cov_day = min(100.0, round((obs_day / expected_per_day) * 100.0, 2))
-        miss_day = round(max(0.0, 100.0 - cov_day), 2)
-        is_partial = cov_day < engineering_threshold_pct
-        if is_partial:
-            partial_days += 1
-        else:
-            full_days += 1
-        daily_items.append(
-            DailyCoverageItem(
-                date=cur_date,
-                observed_readings=obs_day,
-                expected_readings=expected_per_day,
-                coverage_pct=cov_day,
-                missingness_pct=miss_day,
-                is_partial_day=is_partial,
-            )
+    if not cal_comparable:
+        # date_shifted_relative: bucket into 24-hour relative blocks from participant's first reading in window
+        anchor_ts = in_window[0] if in_window else w_start
+        anchor_base_date = anchor_ts.date()
+        counts_by_rel_day: dict[int, int] = defaultdict(int)
+        for t in in_window:
+            rel_idx = max(0, int((t - anchor_ts).total_seconds() // 86400))
+            counts_by_rel_day[rel_idx] += 1
+        max_rel_idx = max(
+            counts_by_rel_day.keys(),
+            default=max(0, int((w_end - anchor_ts).total_seconds() // 86400)),
         )
+        total_calendar_days = max_rel_idx + 1
+        for rel_idx in range(total_calendar_days):
+            cur_date = anchor_base_date + timedelta(days=rel_idx)
+            obs_day = counts_by_rel_day.get(rel_idx, 0)
+            cov_day = min(100.0, round((obs_day / expected_per_day) * 100.0, 2))
+            miss_day = round(max(0.0, 100.0 - cov_day), 2)
+            is_partial = cov_day < engineering_threshold_pct
+            if is_partial:
+                partial_days += 1
+            else:
+                full_days += 1
+            daily_items.append(
+                DailyCoverageItem(
+                    date=cur_date,
+                    observed_readings=obs_day,
+                    expected_readings=expected_per_day,
+                    coverage_pct=cov_day,
+                    missingness_pct=miss_day,
+                    is_partial_day=is_partial,
+                )
+            )
+    else:
+        # Resolve study/patient local timezone for daily coverage bucketing when applicable
+        bucket_tz: tzinfo = timezone.utc
+        if timezone_name:
+            try:
+                bucket_tz = resolve_iana_tz(timezone_name)
+            except Exception:
+                bucket_tz = timezone.utc
+        elif "assumed_study_location" in tz_basis_list or "real_world_local" in sem_list:
+            bucket_tz = resolve_iana_tz("Asia/Shanghai")
+
+        start_date: date = w_start.astimezone(bucket_tz).date()
+        end_date: date = w_end.astimezone(bucket_tz).date()
+        counts_by_day: dict[date, int] = defaultdict(int)
+        for t in in_window:
+            counts_by_day[t.astimezone(bucket_tz).date()] += 1
+
+        total_calendar_days = (end_date - start_date).days + 1
+        for d_offset in range(total_calendar_days):
+            cur_date = start_date + timedelta(days=d_offset)
+            obs_day = counts_by_day.get(cur_date, 0)
+            cov_day = min(100.0, round((obs_day / expected_per_day) * 100.0, 2))
+            miss_day = round(max(0.0, 100.0 - cov_day), 2)
+            is_partial = cov_day < engineering_threshold_pct
+            if is_partial:
+                partial_days += 1
+            else:
+                full_days += 1
+            daily_items.append(
+                DailyCoverageItem(
+                    date=cur_date,
+                    observed_readings=obs_day,
+                    expected_readings=expected_per_day,
+                    coverage_pct=cov_day,
+                    missingness_pct=miss_day,
+                    is_partial_day=is_partial,
+                )
+            )
 
     elapsed_minutes = max(0.0, (w_end - w_start).total_seconds() / 60.0)
     if window_start is not None and window_end is not None and elapsed_minutes >= interval_min:

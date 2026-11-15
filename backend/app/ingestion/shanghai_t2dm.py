@@ -355,6 +355,7 @@ def ingest_shanghai_t2dm(
                 diabetes_type="T2D",
                 height_cm=height_cm,
                 weight_kg=weight_kg,
+                timezone=assumed_iana_tz,
                 consent_granted=bool(participant_consent_version),
                 consent_version=participant_consent_version,
                 retention_policy="dataset_license_bound",

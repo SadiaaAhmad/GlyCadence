@@ -199,6 +199,7 @@ def compute_glucose_summary(
     default_interval_min: int = 15,
     native_only: bool = True,
     device_id: str | None = None,
+    timezone_name: str | None = None,
 ) -> GlucoseSummaryOut:
     """Deterministically compute mean glucose, SD, CV%, TIR, TBR, TAR, and CGM coverage.
 
@@ -243,6 +244,7 @@ def compute_glucose_summary(
         native_only=native_only,
         timestamp_semantics=sem_list,
         timezone_basis=tz_basis_list,
+        timezone_name=timezone_name,
     )
 
     n = len(points)

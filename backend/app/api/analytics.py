@@ -87,6 +87,7 @@ def get_analytics_summary(
             window_end=e_utc,
             native_only=effective_native_only,
             device_id=device_id,
+            timezone_name=patient.timezone,
         )
     except MultipleDevicesError as exc:
         raise HTTPException(

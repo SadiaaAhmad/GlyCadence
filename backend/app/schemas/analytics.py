@@ -4,7 +4,7 @@ from typing import Literal, Sequence
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-CALCULATION_VERSION = "v1.4.0"
+CALCULATION_VERSION = "v1.5.0"
 MAX_EVIDENCE_SOURCE_RECORDS = 200
 
 

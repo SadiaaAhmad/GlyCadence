@@ -2,7 +2,7 @@ import uuid
 from datetime import date, datetime, timezone
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def ensure_utc(dt: datetime) -> datetime:
@@ -31,6 +31,19 @@ class GlucoseCreate(BaseModel):
     @classmethod
     def validate_utc(cls, value: datetime) -> datetime:
         return ensure_utc(value)
+
+    @model_validator(mode="after")
+    def validate_converted_physiological_range(self) -> "GlucoseCreate":
+        glucose_mg_dl = (
+            self.raw_value
+            if self.raw_unit == "mg/dL"
+            else round(self.raw_value * 18.0182, 2)
+        )
+        if not (10.0 <= glucose_mg_dl <= 1500.0):
+            raise ValueError(
+                f"Converted glucose_mg_dl ({glucose_mg_dl} mg/dL) must be within [10.0, 1500.0] mg/dL."
+            )
+        return self
 
 
 class GlucoseOut(BaseModel):

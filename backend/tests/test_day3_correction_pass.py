@@ -725,4 +725,157 @@ def test_group_d_sha256_nonexistent_dict_null_refs_multisheet_and_zip_slip(tmp_p
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Group E — Time handling, validation, reproducibility
+# ---------------------------------------------------------------------------
+
+
+def test_group_e_local_and_relative_daily_coverage_converted_glucose_validation_and_idempotency():
+    # 1. E1: Two complete +08:00 (Asia/Shanghai) local days of 15-min CGM data
+    #    (2023-05-01 00:00+08:00 to 2023-05-02 23:45+08:00 == 2023-04-30 16:00Z to 2023-05-02 15:45Z)
+    #    must report total_days == 2, complete_days == 2, partial_days == 0, and [100.0, 100.0]
+    #    (NOT 3 UTC days [33.33, 100.0, 66.67]).
+    shanghai_tz = timezone(timedelta(hours=8))
+    start_local = datetime(2023, 5, 1, 0, 0, tzinfo=shanghai_tz)
+    shanghai_2d_readings = [
+        {
+            "id": f"sh-2d-{i:04d}",
+            "recorded_at": (start_local + timedelta(minutes=15 * i)).astimezone(timezone.utc),
+            "glucose_mg_dl": 118.0,
+            "reading_type": "cgm",
+            "sampling_interval_min": 15,
+            "observation_provenance": "native",
+            "timestamp_semantics": "real_world_local",
+            "timezone_basis": "assumed_study_location",
+            "source_dataset": "shanghai_t2dm",
+        }
+        for i in range(192)
+    ]
+    summary_sh = compute_glucose_summary(shanghai_2d_readings, native_only=True)
+    assert len(summary_sh.coverage.daily_coverage) == 2
+    assert summary_sh.coverage.full_days_count == 2
+    assert summary_sh.coverage.partial_days_count == 0
+    assert [d.coverage_pct for d in summary_sh.coverage.daily_coverage] == [100.0, 100.0]
+
+    # E1b: date_shifted_relative timestamps bucket by 24-hour relative blocks from participant's first reading
+    rel_first = datetime(2025, 8, 10, 14, 30, tzinfo=timezone.utc)
+    rel_readings = [
+        {
+            "id": f"rel-{i:04d}",
+            "recorded_at": rel_first + timedelta(minutes=15 * i),
+            "glucose_mg_dl": 122.0,
+            "reading_type": "cgm",
+            "sampling_interval_min": 15,
+            "observation_provenance": "native",
+            "timestamp_semantics": "date_shifted_relative",
+            "timezone_basis": "not_applicable_relative",
+            "source_dataset": "cgmacros",
+        }
+        for i in range(192)
+    ]
+    summary_rel = compute_glucose_summary(rel_readings, native_only=True)
+    assert len(summary_rel.coverage.daily_coverage) == 2
+    assert summary_rel.coverage.full_days_count == 2
+    assert summary_rel.coverage.partial_days_count == 0
+    assert [d.coverage_pct for d in summary_rel.coverage.daily_coverage] == [100.0, 100.0]
+
+    # 2. E2 & E3: GlucoseCreate physiological range validation after mmol/L conversion,
+    #    duplicate POST -> 409 Conflict, and Idempotency-Key payload mismatch -> 409 Conflict
+    email = f"group_e_{uuid.uuid4().hex[:8]}@example.com"
+    client = TestClient(app)
+    try:
+        client.post("/api/v1/auth/register", json={"email": email, "password": "StrongPass123!"})
+        login = client.post("/api/v1/auth/login", json={"email": email, "password": "StrongPass123!"})
+        headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        create_p = client.post(
+            "/api/v1/patients",
+            json={"display_name": "Group E User", "consent_granted": True, "consent_version": "v1.0"},
+            headers=headers,
+        )
+        patient_id = create_p.json()["id"]
+
+        # E2: raw_value=100.0 mmol/L -> 1801.82 mg/dL (> 1500 mg/dL) must be rejected with 422
+        r_high_mmol = client.post(
+            f"/api/v1/patients/{patient_id}/glucose",
+            headers=headers,
+            json={
+                "recorded_at": "2026-06-01T08:00:00Z",
+                "raw_value": 100.0,
+                "raw_unit": "mmol/L",
+                "reading_type": "cgm",
+            },
+        )
+        assert r_high_mmol.status_code == 422, r_high_mmol.text
+
+        # E2: raw_value=0.3 mmol/L -> 5.41 mg/dL (< 10 mg/dL) must be rejected with 422
+        r_low_mmol = client.post(
+            f"/api/v1/patients/{patient_id}/glucose",
+            headers=headers,
+            json={
+                "recorded_at": "2026-06-01T08:00:00Z",
+                "raw_value": 0.3,
+                "raw_unit": "mmol/L",
+                "reading_type": "cgm",
+            },
+        )
+        assert r_low_mmol.status_code == 422, r_low_mmol.text
+
+        # E3a: First valid POST with Idempotency-Key succeeds (201)
+        idem_headers = {**headers, "Idempotency-Key": "idem-key-group-e-1"}
+        valid_payload = {
+            "recorded_at": "2026-06-01T09:00:00Z",
+            "raw_value": 6.5,
+            "raw_unit": "mmol/L",
+            "reading_type": "cgm",
+            "device_id": "Libre_User",
+        }
+        r_first = client.post(
+            f"/api/v1/patients/{patient_id}/glucose",
+            headers=idem_headers,
+            json=valid_payload,
+        )
+        assert r_first.status_code == 201, r_first.text
+        first_id = r_first.json()["id"]
+
+        # E3b: Exact idempotent replay with same Idempotency-Key and same payload returns existing row
+        r_replay = client.post(
+            f"/api/v1/patients/{patient_id}/glucose",
+            headers=idem_headers,
+            json=valid_payload,
+        )
+        assert r_replay.status_code in (200, 201), r_replay.text
+        assert r_replay.json()["id"] == first_id
+
+        # E3c: Reusing same Idempotency-Key with a DIFFERENT payload returns 409 Conflict
+        r_mismatch = client.post(
+            f"/api/v1/patients/{patient_id}/glucose",
+            headers=idem_headers,
+            json={
+                **valid_payload,
+                "raw_value": 9.2,
+            },
+        )
+        assert r_mismatch.status_code == 409, r_mismatch.text
+
+        # E3d: Duplicate POST without Idempotency-Key hitting uq_glucose_patient_time_type_device returns 409 (not 500)
+        r_dup = client.post(
+            f"/api/v1/patients/{patient_id}/glucose",
+            headers=headers,
+            json=valid_payload,
+        )
+        assert r_dup.status_code == 409, r_dup.text
+    finally:
+        with Session(get_engine()) as db:
+            u = db.scalar(select(User).where(User.email == email))
+            if u is not None:
+                for p in db.scalars(select(Patient).where(Patient.user_id == u.id)).all():
+                    p.retention_expires_at = None
+                    db.flush()
+                    db.delete(p)
+                db.flush()
+                db.delete(u)
+                db.commit()
+
+
+
 
