@@ -169,6 +169,17 @@ def _evaluate_sliced_meal_window(
         if (peak_post is not None and pre_val is not None)
         else None
     )
+    if excursion_delta is None:
+        excursion_dir = "unavailable"
+    elif excursion_delta > 0.0:
+        excursion_dir = "positive_excursion"
+    elif excursion_delta < 0.0:
+        excursion_dir = "postprandial_decline"
+        uncertainty_notes.append(
+            f"All post-meal readings remained below pre-meal baseline (excursion_delta_mg_dl={excursion_delta:.2f} mg/dL, postprandial_decline; never a postprandial spike)."
+        )
+    else:
+        excursion_dir = "no_change"
 
     if rejection_reasons or anchor_point is None:
         return MealResponseItem(
@@ -183,6 +194,7 @@ def _evaluate_sliced_meal_window(
             pre_meal_recorded_at=anchor_point.recorded_at if anchor_point else None,
             peak_post_meal_glucose_mg_dl=peak_post,
             excursion_delta_mg_dl=excursion_delta,
+            excursion_direction=excursion_dir,
             post_meal_reading_count=post_count,
             excluded_non_native_count=excluded_non_native,
             excluded_non_cgm_count=excluded_non_cgm,
@@ -309,6 +321,7 @@ def _evaluate_sliced_meal_window(
         pre_meal_recorded_at=anchor_point.recorded_at,
         peak_post_meal_glucose_mg_dl=peak_post,
         excursion_delta_mg_dl=excursion_delta,
+        excursion_direction=excursion_dir,
         post_meal_reading_count=post_count,
         excluded_non_native_count=excluded_non_native,
         excluded_non_cgm_count=excluded_non_cgm,

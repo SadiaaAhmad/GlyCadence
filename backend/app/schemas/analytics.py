@@ -170,6 +170,7 @@ class MealResponseItem(BaseModel):
     pre_meal_recorded_at: datetime | None
     peak_post_meal_glucose_mg_dl: float | None
     excursion_delta_mg_dl: float | None
+    excursion_direction: Literal["positive_excursion", "postprandial_decline", "no_change", "unavailable"] = "unavailable"
     post_meal_reading_count: int
     excluded_non_native_count: int = 0
     excluded_non_cgm_count: int = 0
@@ -211,9 +212,9 @@ class DriftSummaryOut(BaseModel):
     provenance_filter_mode: Literal["native_only", "include_non_native"] = "native_only"
     baseline_coverage_pct: float | None = None
     recent_coverage_pct: float | None = None
-    baseline_mean_mg_dl: float | None
-    recent_mean_mg_dl: float | None
-    delta_mg_dl: float | None
+    baseline_mean_mg_dl: float | None = None
+    recent_mean_mg_dl: float | None = None
+    delta_mg_dl: float | None = None
     statistical_note: str = (
         "Exploratory descriptive comparison only: CGM time series are serially autocorrelated, "
         "so ordinary independent-sample t-test p-values do not establish statistical significance."

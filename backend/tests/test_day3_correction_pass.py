@@ -1138,3 +1138,42 @@ def test_audit_item_6_evaluate_single_meal_response_has_no_private_underscore_pa
     private_params = [name for name in sig.parameters if name.startswith("_")]
     assert private_params == [], f"Found private parameters on public API: {private_params}"
     assert callable(_evaluate_sliced_meal_window)
+
+
+# ---------------------------------------------------------------------------
+# Audit Item 4 — Negative excursion_delta classification & Drift insufficient_data fix
+# ---------------------------------------------------------------------------
+
+
+def test_audit_item_4_negative_excursion_direction_and_drift_insufficient_data_null_means():
+    t_meal = datetime(2026, 6, 12, 12, 0, tzinfo=timezone.utc)
+    # Pre-meal anchor is 160 mg/dL, and all post-meal readings are lower (max post-meal is 140 mg/dL -> delta = -20.0 mg/dL)
+    readings = [
+        {"id": f"neg-r-{idx}", "recorded_at": t_meal + timedelta(minutes=offset), "glucose_mg_dl": val, "reading_type": "cgm", "observation_provenance": "native", "source_dataset": "shanghai_t2dm"}
+        for idx, (offset, val) in enumerate([(-10, 160.0), (15, 140.0), (30, 135.0), (60, 128.0), (90, 122.0), (120, 118.0)])
+    ]
+    res = evaluate_single_meal_response(
+        meal_id="meal-neg-delta",
+        logged_at=t_meal,
+        meal_type="lunch",
+        description="Low-carb salad",
+        carbs_g=10.0,
+        meal_source_dataset="shanghai_t2dm",
+        glucose_readings=readings,
+        native_only=True,
+    )
+    assert res.iauc_valid is True
+    assert res.iauc_mg_dl_min == 0.0
+    assert res.excursion_delta_mg_dl == -20.0
+    assert res.excursion_direction == "postprandial_decline"
+    assert any("below pre-meal baseline" in n and "never a postprandial spike" in n for n in res.uncertainty_notes)
+
+    # Also verify compute_glucose_drift with 0 native readings returns status='insufficient_data' without ValidationError
+    unknown_readings = [
+        {**r, "observation_provenance": "unknown"} for r in readings
+    ]
+    drift_empty = compute_glucose_drift(unknown_readings, native_only=True)
+    assert drift_empty.status == "insufficient_data"
+    assert drift_empty.baseline_mean_mg_dl is None
+    assert drift_empty.recent_mean_mg_dl is None
+    assert drift_empty.delta_mg_dl is None
