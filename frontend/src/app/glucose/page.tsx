@@ -61,11 +61,8 @@ export default function GlucosePage() {
 
   const agpSeries = (pattern?.hours ?? []).map((h) => ({
     label: h.label,
-    p10: h.p10,
-    p25: h.p25,
-    p50: h.p50,
-    p75: h.p75,
-    p90: h.p90,
+    "Usual upper range": h.p75,
+    "Typical reading": h.p50,
   }));
 
   const tir = summary?.tir_pct ?? 0;
@@ -236,8 +233,8 @@ export default function GlucosePage() {
                 }}
               />
               <ReferenceArea y1={70} y2={180} fill="#F2A93B" fillOpacity={0.14} />
-              <Area type="monotone" dataKey="p75" stroke="none" fill="#F2A93B" fillOpacity={0.25} isAnimationActive={false} />
-              <Line type="monotone" dataKey="p50" stroke="#FF4D4D" strokeWidth={2.5} dot={false} isAnimationActive={false} />
+              <Area type="monotone" dataKey="Usual upper range" stroke="none" fill="#F2A93B" fillOpacity={0.25} isAnimationActive={false} />
+              <Line type="monotone" dataKey="Typical reading" stroke="#FF4D4D" strokeWidth={2.5} dot={false} isAnimationActive={false} />
             </AreaChart>
           </ResponsiveContainer>
         </div>

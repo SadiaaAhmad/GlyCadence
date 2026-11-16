@@ -110,11 +110,11 @@ function AskCadieContent() {
   );
 
   useEffect(() => {
-    if (initialQuery && activePatientId && sessionsLoaded && !autoSentRef.current) {
+    if (initialQuery && activePatientId && !autoSentRef.current) {
       autoSentRef.current = true;
       void sendMessageText(initialQuery);
     }
-  }, [initialQuery, activePatientId, sessionsLoaded, sendMessageText]);
+  }, [initialQuery, activePatientId, sendMessageText]);
 
   async function handleNewChat() {
     if (!activePatientId) return;

@@ -79,6 +79,11 @@ export default function MealDetailPage() {
                 <span className="rounded-full bg-[var(--bg-muted)] px-3 py-0.5">
                   {recipe.prep_min} min · {recipe.cost_tier === "low" ? "Budget-friendly" : "Moderate cost"}
                 </span>
+                {detail.confidence_label && (
+                  <span className="rounded-full bg-emerald-500/15 px-3 py-0.5 font-semibold text-emerald-700 dark:text-emerald-300">
+                    {detail.confidence_label}
+                  </span>
+                )}
               </div>
               <h1 className="font-display text-2xl sm:text-3xl font-semibold mt-3">{recipe.name}</h1>
               <p className="text-sm text-[var(--text-muted)] mt-1">{detail.best_time_reason}</p>

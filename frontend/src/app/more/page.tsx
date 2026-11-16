@@ -4,6 +4,7 @@ import React from "react";
 import Link from "next/link";
 import {
   ClipboardList,
+  Dumbbell,
   HeartHandshake,
   Layers,
   Moon,
@@ -12,6 +13,12 @@ import {
 } from "lucide-react";
 
 const MORE_ITEMS = [
+  {
+    href: "/exercise",
+    title: "Exercise Routine (Mover)",
+    desc: "Weekly 150-min aerobic & strength tracker + 15-min post-meal walks",
+    icon: Dumbbell,
+  },
   {
     href: "/medicines",
     title: "Medicines (Dose Diary)",

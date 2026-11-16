@@ -168,3 +168,49 @@ def test_p4_verify_chat_reply_safety_extensions() -> None:
         allowed_numbers={132.0, 38.0},
     )
     assert good.passed
+
+
+def test_high_sugar_200_dizzy_never_recommends_fast_sugar_and_mover_exercise_agent() -> None:
+    from app.agents.cadie import detect_urgent_safety_trigger
+
+    kind, _, val = detect_urgent_safety_trigger("idk i feel so dizzy, my sugar is 200")
+    assert kind == "high_sugar"
+    assert val == 200
+
+    kind_low, _, val_low = detect_urgent_safety_trigger("feeling shaky sugar is 55")
+    assert kind_low == "low_sugar"
+    assert val_low == 55
+
+    with TestClient(app) as client:
+        email = "personal_isolated_test@example.com"
+        client.post("/api/v1/auth/register", json={"email": email, "password": "TestPassword123!"})
+        tok = client.post("/api/v1/auth/login", json={"email": email, "password": "TestPassword123!"}).json()["access_token"]
+        headers = {"Authorization": f"Bearer {tok}"}
+
+        # Personal app_user profile auto-created and listed first
+        pts = client.get("/api/v1/patients", headers=headers).json()
+        assert len(pts) >= 1
+        assert pts[0]["cohort_type"] == "app_user"
+        pid = pts[0]["id"]
+
+        # Test chat with 200 + dizzy
+        sid = client.post(f"/api/v1/patients/{pid}/chat/sessions", json={}, headers=headers).json()["id"]
+        c_res = client.post(
+            f"/api/v1/patients/{pid}/chat/sessions/{sid}/messages",
+            json={"content": "idk i feel so dizzy, my sugar is 200", "mode": "deterministic_fallback"},
+            headers=headers,
+        ).json()
+        reply_lower = c_res["cadie_message"]["content"].lower()
+        assert "do not take sweet juice or fast sugar" in reply_lower
+        assert "15-15" not in reply_lower
+
+        # Test Mover Exercise Agent + Logging
+        ex_log = client.post(
+            f"/api/v1/patients/{pid}/exercise/log",
+            json={"activity_type": "post_meal_walk", "duration_min": 15, "intensity": "low"},
+            headers=headers,
+        )
+        assert ex_log.status_code == 200
+        ex_plan = client.get(f"/api/v1/patients/{pid}/exercise/plan", headers=headers)
+        assert ex_plan.status_code == 200
+        assert ex_plan.json()["mover"]["cards"][0]["weekly_minutes"] >= 15

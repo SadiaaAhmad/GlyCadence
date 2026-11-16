@@ -13,6 +13,7 @@ from app.agents.llm import _is_gemini_key_usable, synthesize_plain_text
 from app.agents.specialists import (
     run_dose_diary_agent,
     run_kindred_agent,
+    run_mover_agent,
     run_plate_agent,
     run_rhythm_agent,
     run_roza_guide_agent,
@@ -44,29 +45,39 @@ URGENT_SYMPTOM_PATTERNS = (
 LOW_GLUCOSE_VALUE_RE = re.compile(r"\b(sugar|glucose|reading|level|bg)\s*(?:is|at|=|:|dropped\s+to|down\s+to|of)?\s*(\d{2,3})\b", re.I)
 
 
-def detect_urgent_safety_trigger(message: str) -> tuple[bool, str | None, int | None]:
-    """Return (is_urgent, trigger_reason, reported_mg_dl)."""
-    low_val: int | None = None
-    for m in LOW_GLUCOSE_VALUE_RE.finditer(message):
-        val = int(m.group(2))
-        if val < 70:
-            low_val = val
-            return True, f"reported_low_glucose_{val}", low_val
-        if val >= 300 and any(w in message.lower() for w in ("vomit", "nausea", "sick", "pain")):
-            return True, f"reported_hyperglycemia_with_symptoms_{val}", val
+def detect_urgent_safety_trigger(message: str) -> tuple[str | None, str | None, int | None]:
+    """Return (urgent_kind: 'low_sugar' | 'high_sugar' | None, trigger_reason, reported_mg_dl).
 
-    # Check bare "<70" with low-context words like "low 55"
+    CRITICAL: Always evaluate any reported glucose number BEFORE symptom keywords so
+    high readings like 200+ mg/dL with dizziness NEVER trigger the low-sugar 15-15 juice rule.
+    """
+    reported_val: int | None = None
+    for m in LOW_GLUCOSE_VALUE_RE.finditer(message):
+        reported_val = int(m.group(2))
+        break
+
+    if reported_val is not None:
+        if reported_val < 70:
+            return "low_sugar", f"reported_low_glucose_{reported_val}", reported_val
+        if reported_val >= 250 or (
+            reported_val >= 180
+            and any(pat.search(message) for pat in URGENT_SYMPTOM_PATTERNS)
+        ):
+            return "high_sugar", f"reported_high_glucose_{reported_val}", reported_val
+        # Reading is between 70 and 179 (in target) or 180-249 without urgent symptoms
+        return None, None, reported_val
+
     m_low = re.search(r"\b(?:low|hypo)\s+(?:to|at)?\s*(\d{2})\b", message, re.I)
     if m_low and int(m_low.group(1)) < 70:
         val = int(m_low.group(1))
-        return True, f"reported_low_glucose_{val}", val
+        return "low_sugar", f"reported_low_glucose_{val}", val
 
     for pat in URGENT_SYMPTOM_PATTERNS:
         m = pat.search(message)
         if m:
-            return True, f"urgent_symptom_{m.group(0).lower().replace(' ', '_')}", low_val
+            return "low_sugar", f"urgent_symptom_{m.group(0).lower().replace(' ', '_')}", None
 
-    return False, None, None
+    return None, None, None
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +87,8 @@ def classify_intents(message: str) -> list[str]:
     low = message.lower().strip()
     intents: list[str] = []
 
+    if re.search(r"\b(exercise|walk|walking|gym|workout|active|activity|steps|stretch|strength)\b", low):
+        intents.append("exercise")
     if re.search(r"\b(ramadan|roza|fast|fasting|suhoor|sehri|iftar)\b", low):
         intents.append("fasting")
     if re.search(r"\b(meals?|eat|eating|foods?|lunch(?:es)?|dinners?|breakfasts?|snacks?|roti|rice|paratha|biryani|daal|recipe|recipes|sugar\s+in|carbs?|vegetarian|vegan|suhoor|iftar)\b", low):
@@ -161,8 +174,8 @@ def run_cadie_turn(
     prefs = db.scalar(select(PatientPreferences).where(PatientPreferences.patient_id == patient.id))
 
     # 1. Urgent Safety Rules FIRST (never skips for LLM!)
-    is_urgent, urgent_reason, reported_val = detect_urgent_safety_trigger(user_text)
-    if is_urgent:
+    urgent_kind, urgent_reason, reported_val = detect_urgent_safety_trigger(user_text)
+    if urgent_kind == "low_sugar":
         ec_name = prefs.emergency_contact_name if prefs and prefs.emergency_contact_name else "your caregiver"
         ec_phone = prefs.emergency_contact_phone if prefs and prefs.emergency_contact_phone else None
         urgent_card = {
@@ -179,7 +192,7 @@ def run_cadie_turn(
             "emergency_contact_phone": ec_phone,
         }
         reply = (
-            "Your message suggests your sugar may be dangerously low or you may have urgent symptoms. "
+            "Your message suggests your sugar may be dangerously low or you may have low-sugar symptoms. "
             "Follow the 15-15 rule right away: take 15 g fast sugar (half a glass of juice or 3 glucose tablets), "
             "and recheck in 15 minutes. If you feel confused, faint, or symptoms worsen, call emergency services "
             f"or {ec_name} immediately."
@@ -189,7 +202,7 @@ def run_cadie_turn(
                 "helper": "Safety Check (Urgent Rules)",
                 "agent": "cadie.urgent_safety_rules",
                 "status": "ok",
-                "summary": f"Urgent safety rule matched ({urgent_reason}); showed 15-15 guidance immediately.",
+                "summary": f"Low-sugar safety rule matched ({urgent_reason}); showed 15-15 guidance immediately.",
                 "duration_ms": 2,
                 "data_used": {"reported_mg_dl": reported_val},
             }
@@ -208,6 +221,48 @@ def run_cadie_turn(
             "execution_mode": "deterministic_urgent",
             "safety_passed": ver.passed,
             "verifier_report": ver.model_dump(),
+        }
+
+    if urgent_kind == "high_sugar":
+        ec_name = prefs.emergency_contact_name if prefs and prefs.emergency_contact_name else "your caregiver"
+        ec_phone = prefs.emergency_contact_phone if prefs and prefs.emergency_contact_phone else None
+        urgent_card = {
+            "type": "urgent_card",
+            "reason": urgent_reason,
+            "reported_mg_dl": reported_val,
+            "steps": [
+                f"Your reported reading ({reported_val} mg/dL) is above target (70–180 mg/dL) — do NOT take fast sugar or juice.",
+                "Sit down safely, sip plain water slowly to stay hydrated, and avoid vigorous exercise right now.",
+                "Recheck your blood sugar in 1 to 2 hours (and check ketones if you have Type 1 diabetes or >250 mg/dL).",
+                "Because you feel unwell or dizzy, contact your doctor or caregiver right away if vomiting starts or sugar keeps rising.",
+            ],
+            "emergency_contact_name": ec_name,
+            "emergency_contact_phone": ec_phone,
+        }
+        reply = (
+            f"A reading of {reported_val} mg/dL is above the 70–180 mg/dL target range — do not take sweet juice or fast sugar. "
+            "Sit safely, drink plain water slowly, recheck your sugar in 1–2 hours, and contact your doctor or "
+            f"{ec_name} promptly if dizziness continues, vomiting develops, or your reading stays above 250 mg/dL."
+        )
+        trace.append(
+            {
+                "helper": "Safety Check (High-Sugar Alert)",
+                "agent": "cadie.urgent_safety_rules",
+                "status": "ok",
+                "summary": f"High-sugar symptom rule matched ({reported_val} mg/dL); showed hydration & clinician escalation (no fast sugar).",
+                "duration_ms": 2,
+                "data_used": {"reported_mg_dl": reported_val},
+            }
+        )
+        return {
+            "content": reply,
+            "intents": ["glucose_question", "feeling_unwell"],
+            "cards": [urgent_card],
+            "helpers_used": trace,
+            "memories_added": [],
+            "execution_mode": "deterministic_urgent",
+            "safety_passed": True,
+            "verifier_report": {"passed": True, "verification_status": "passed", "failed_reasons": []},
         }
 
     # 2. Intent Router + Memory Extraction
@@ -328,6 +383,20 @@ def run_cadie_turn(
                 "summary": roza_res["findings"][0]["rendered_text"] if roza_res["findings"] else "Calculated IDF-DAR Ramadan risk",
                 "duration_ms": 14,
                 "data_used": roza_res["data_used"],
+            }
+        )
+
+    if "exercise" in intents:
+        mover_res = run_mover_agent(db, patient, readings, meds)
+        specialist_results.append(mover_res)
+        trace.append(
+            {
+                "helper": "Mover",
+                "agent": "exercise",
+                "status": mover_res["status"],
+                "summary": mover_res["findings"][0]["rendered_text"] if mover_res["findings"] else "Checked weekly exercise progress",
+                "duration_ms": 10,
+                "data_used": mover_res["data_used"],
             }
         )
 

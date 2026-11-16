@@ -176,6 +176,12 @@ export const apiClient = {
     ),
 
   getVisitReport: (pid: string) => fetchJson<VisitReportResponse>(`/api/v1/patients/${pid}/visit-report`),
+  getExercisePlan: (pid: string) =>
+    fetchJson<{ patient_id: string; mover: { findings: { id: string; rendered_text: string }[]; cards: Record<string, unknown>[] } }>(
+      `/api/v1/patients/${pid}/exercise/plan`
+    ),
+  logExercise: (pid: string, body: { activity_type: string; duration_min: number; intensity: "low" | "moderate" | "vigorous" }) =>
+    fetchJson(`/api/v1/patients/${pid}/exercise/log`, { method: "POST", body: JSON.stringify(body) }),
   getPreferences: (pid: string) => fetchJson<PatientPreferencesOut>(`/api/v1/patients/${pid}/preferences`),
   updatePreferences: (pid: string, body: Partial<PatientPreferencesOut>) =>
     fetchJson<PatientPreferencesOut>(`/api/v1/patients/${pid}/preferences`, {

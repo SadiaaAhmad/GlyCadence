@@ -1,12 +1,15 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { AlertCircle, CheckCircle2, Clock, Pill } from "lucide-react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { AlertCircle, ArrowLeft, CheckCircle2, Clock, MessageCircleHeart, Pill } from "lucide-react";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient } from "@/services/api";
 import type { MedicinesSummaryResponse } from "@/types/glycadence";
 
 export default function MedicinesPage() {
+  const router = useRouter();
   const { activePatientId } = usePatientContext();
   const [data, setData] = useState<MedicinesSummaryResponse | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -36,17 +39,42 @@ export default function MedicinesPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-2xl sm:text-3xl font-semibold">Medicines (Dose Diary)</h1>
-        <p className="text-sm text-[var(--text-muted)]">
-          Track your daily schedule, understand each medicine, and keep an eye on refills. GlyCadence never adjusts doses.
-        </p>
+      <Link href="/more" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#FF4D4D]">
+        <ArrowLeft className="h-4 w-4" /> Back to Care Tools
+      </Link>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="font-display text-2xl sm:text-3xl font-semibold">Medicines (Dose Diary)</h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            Track your daily schedule, understand each medicine, and keep an eye on refills. GlyCadence never adjusts doses.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => router.push(`/ask?q=${encodeURIComponent("Review my diabetes medicines with my recent glucose patterns")}`)}
+          className="inline-flex items-center gap-1.5 rounded-[14px] bg-[#FF4D4D] px-4 py-2 text-xs font-semibold text-white hover:bg-[#e84141]"
+        >
+          <MessageCircleHeart className="h-3.5 w-3.5" /> Ask Cadie about medicines
+        </button>
       </div>
 
       {toast && (
         <div className="rounded-xl bg-[#F2A93B]/20 px-4 py-2 text-xs font-semibold">
           {toast}
         </div>
+      )}
+
+      {(data?.glucose_context ?? []).length > 0 && (
+        <section className="gc-card p-4 space-y-1.5 border-[#F2A93B]/50">
+          <div className="text-xs font-semibold text-[#9B630B] dark:text-[#F2A93B]">
+            Dose Diary · Connected to Your Glucose Readings
+          </div>
+          {data?.glucose_context?.map((line, i) => (
+            <p key={i} className="text-xs text-[var(--text-muted)]">
+              • {line}
+            </p>
+          ))}
+        </section>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

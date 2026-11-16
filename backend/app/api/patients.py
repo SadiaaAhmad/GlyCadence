@@ -28,6 +28,38 @@ def list_accessible_patients(
       `shanghai_t2dm` ordered first as the primary research demo path.
     """
     stmt = select(Patient)
+    all_patients = [p for p in db.scalars(stmt).all() if p.deleted_at is None]
+    has_own_app_user = any(
+        p.cohort_type == "app_user" and p.user_id == current_user.id for p in all_patients
+    )
+    if not has_own_app_user and current_user.role == "patient":
+        label_name = current_user.email.split("@")[0].replace(".", " ").title()
+        personal = Patient(
+            id=uuid.uuid4(),
+            user_id=current_user.id,
+            cohort_type="app_user",
+            display_name=f"{label_name} (My Profile)",
+            diabetes_type="T2D",
+            timezone="Asia/Karachi",
+            consent_granted=True,
+            consent_version="v1",
+            consent_granted_at=datetime.now(timezone.utc),
+            retention_policy="365_days",
+            source_dataset="app_user",
+        )
+        db.add(personal)
+        db.commit()
+        db.refresh(personal)
+        all_patients.append(personal)
+    if current_user.role in {"researcher", "admin"}:
+        patients = all_patients
+    else:
+        patients = [
+            p
+            for p in all_patients
+            if p.cohort_type == "synthetic_demo"
+            or (p.cohort_type == "app_user" and p.user_id == current_user.id)
+        ]
     if current_user.role in {"researcher", "admin"}:
         patients = [p for p in db.scalars(stmt).all() if p.deleted_at is None]
     else:
@@ -42,6 +74,8 @@ def list_accessible_patients(
         ]
 
     def _sort_key(p: Patient) -> tuple[int, str]:
+        if p.cohort_type == "app_user" and p.user_id == current_user.id:
+            return (-1, p.display_name or str(p.id))
         if p.cohort_type == "research_participant" and p.source_dataset == "shanghai_t2dm":
             return (0, p.external_id or str(p.id))
         if p.cohort_type == "research_participant":

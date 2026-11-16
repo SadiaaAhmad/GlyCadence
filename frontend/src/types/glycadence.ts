@@ -174,6 +174,8 @@ export interface MealDetailOut {
   };
   what_it_may_mean: string[];
   health_education_source: string;
+  confidence_pct?: number;
+  confidence_label?: string;
 }
 
 export interface MealPlanResponse {
@@ -252,9 +254,11 @@ export interface MedicinesSummaryResponse {
     status: string;
     notes: string | null;
   }[];
+  adaptive_questions?: { id: string; category: string; question: string; reason: string }[];
   agent_summary: {
     findings: { id: string; kind: string; rendered_text: string }[];
   };
+  glucose_context?: string[];
 }
 
 export interface WellbeingSummaryResponse {
@@ -269,6 +273,7 @@ export interface WellbeingSummaryResponse {
     illness_flag: boolean | null;
     mood_notes: string | null;
   }[];
+  adaptive_questions?: { id: string; category: string; question: string; reason: string }[];
   agent_summary: {
     findings: { id: string; kind: string; rendered_text: string }[];
     cards: { type: string; items?: string[] }[];

@@ -9,9 +9,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.agents.specialists import (
+    build_adaptive_wellbeing_questions,
     compute_idf_dar_risk,
     run_dose_diary_agent,
     run_kindred_agent,
+    run_mover_agent,
     run_plate_agent,
     run_rhythm_agent,
     run_roza_guide_agent,
@@ -20,6 +22,7 @@ from app.agents.specialists import (
 from app.core.database import get_db
 from app.core.security import get_current_user, require_patient_access
 from app.models import (
+    ActivityRecord,
     GlucoseReading,
     Meal,
     Medication,
@@ -161,6 +164,11 @@ def get_medicines_summary(
     } if meds else {}
 
     dose_res = run_dose_diary_agent(db, patient, meds, events)
+    readings_all = list(
+        db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == patient.id).order_by(GlucoseReading.recorded_at.asc())).all()
+    )
+    rhy_res = run_rhythm_agent(db, patient, readings_all)
+    glucose_links = [f["rendered_text"] for f in rhy_res.get("findings", []) if f.get("kind") in ("low_risk", "low_risk_reassurance", "today_snapshot")]
     plain_explanations = {
         "Biguanide": "Helps your body use its own insulin better; usually taken with meals to ease stomach comfort.",
         "Sulfonylurea": "Helps release more insulin; can lower sugar further if a meal is delayed or skipped.",
@@ -197,6 +205,7 @@ def get_medicines_summary(
             for e in events[:12]
         ],
         "agent_summary": dose_res,
+        "glucose_context": glucose_links,
     }
 
 
@@ -241,6 +250,7 @@ def get_wellbeing_summary(
     patient = require_patient_access(patient_id, current_user, db, write=False)
     readings, _, _, _, wellbeing = _load_core(db, patient.id)
     kin = run_kindred_agent(db, patient, readings, wellbeing)
+    adaptive_questions = build_adaptive_wellbeing_questions(readings, wellbeing)
     return {
         "patient_id": str(patient.id),
         "checkins": [
@@ -256,6 +266,7 @@ def get_wellbeing_summary(
             }
             for w in wellbeing[:14]
         ],
+        "adaptive_questions": adaptive_questions,
         "agent_summary": kin,
     }
 
@@ -455,3 +466,44 @@ h1{{color:#2B1E2F;border-bottom:2px solid #F2A93B;padding-bottom:8px}}ul{{paddin
         return HTMLResponse(content=html)
 
     return payload
+
+
+class ExerciseLogRequest(BaseModel):
+    activity_type: str = Field(default="walk", max_length=64)
+    duration_min: int = Field(ge=5, le=300)
+    intensity: Literal["low", "moderate", "vigorous"] = "moderate"
+
+
+@router.get("/exercise/plan")
+def get_exercise_plan(
+    patient_id: uuid.UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    patient = require_patient_access(patient_id, current_user, db, write=False)
+    readings, _, meds, _, _ = _load_core(db, patient.id)
+    mover = run_mover_agent(db, patient, readings, meds)
+    return {"patient_id": str(patient.id), "mover": mover}
+
+
+@router.post("/exercise/log")
+def log_exercise_session(
+    patient_id: uuid.UUID,
+    payload: ExerciseLogRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    patient = require_patient_access(patient_id, current_user, db, write=False)
+    rec = ActivityRecord(
+        id=uuid.uuid4(),
+        patient_id=patient.id,
+        cohort_type=patient.cohort_type,
+        recorded_at=datetime.now(timezone.utc),
+        activity_type=payload.activity_type,
+        active_minutes=payload.duration_min,
+        intensity=payload.intensity,
+        source_dataset="app_user",
+    )
+    db.add(rec)
+    db.commit()
+    return {"status": "logged", "id": str(rec.id)}

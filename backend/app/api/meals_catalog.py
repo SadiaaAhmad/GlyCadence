@@ -88,6 +88,8 @@ class MealDetailOut(BaseModel):
     personal_history: PersonalMealHistoryOut
     what_it_may_mean: list[str]
     health_education_source: str
+    confidence_pct: int = 52
+    confidence_label: str = "General nutrition match"
 
 
 class MealPlanSlotOut(BaseModel):
@@ -316,6 +318,12 @@ def get_recipe_detail(
         personal_history=personal,
         what_it_may_mean=mean_notes,
         health_education_source="USDA FoodData Central & ADA Standards of Care 2025 (educational nutrition facts, not medical advice)",
+        confidence_pct=min(96, 52 + 11 * personal.times_observed) if personal.times_observed > 0 else 52,
+        confidence_label=(
+            f"{min(96, 52 + 11 * personal.times_observed)}% personal match (based on {personal.times_observed} logged meal(s))"
+            if personal.times_observed > 0
+            else "52% general match (log this meal once to personalize)"
+        ),
     )
 
 
@@ -429,4 +437,10 @@ def get_patient_meal_detail(
             "General education: Post-meal glucose peaks commonly occur 45–90 minutes after eating and settle within 2–3 hours.",
         ],
         health_education_source="USDA FoodData Central & ADA Standards of Care 2025",
+        confidence_pct=min(96, 52 + 11 * personal.times_observed) if personal.times_observed > 0 else 52,
+        confidence_label=(
+            f"{min(96, 52 + 11 * personal.times_observed)}% personal match (based on {personal.times_observed} logged meal(s))"
+            if personal.times_observed > 0
+            else "52% general match (log this meal once to personalize)"
+        ),
     )

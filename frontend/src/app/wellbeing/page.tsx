@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import { HeartHandshake, ShieldAlert } from "lucide-react";
+import Link from "next/link";
+import { ArrowLeft, HeartHandshake, ShieldAlert } from "lucide-react";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient } from "@/services/api";
 import type { WellbeingSummaryResponse } from "@/types/glycadence";
@@ -59,6 +60,9 @@ export default function WellbeingPage() {
 
   return (
     <div className="space-y-6">
+      <Link href="/more" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#FF4D4D]">
+        <ArrowLeft className="h-4 w-4" /> Back to Care Tools
+      </Link>
       <div>
         <h1 className="font-display text-2xl sm:text-3xl font-semibold">Wellbeing (Kindred)</h1>
         <p className="text-sm text-[var(--text-muted)]">
@@ -78,6 +82,31 @@ export default function WellbeingPage() {
               {f.rendered_text}
             </p>
           ))}
+        </section>
+      )}
+
+      {/* Adaptive Physical & Mental Check-In Questions from Kindred */}
+      {(data?.adaptive_questions ?? []).length > 0 && (
+        <section className="gc-card p-5 space-y-3 border-[#FF4D4D]/30">
+          <div className="font-display text-base font-semibold">
+            Kindred&apos;s Questions Based on Your Recent Readings
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {data?.adaptive_questions?.map((aq) => (
+              <div key={aq.id} className="rounded-xl bg-[var(--bg-page)] border border-[var(--border-clay)] p-3.5 text-xs space-y-1.5">
+                <span className="font-semibold text-[#FF4D4D]">{aq.category}</span>
+                <p className="text-sm font-medium">{aq.question}</p>
+                <p className="text-[var(--text-muted)]">{aq.reason}</p>
+                <button
+                  type="button"
+                  onClick={() => setNotes((prev) => `${prev ? prev + "; " : ""}${aq.category}: noticed recently`)}
+                  className="rounded-full bg-[var(--bg-muted)] px-2.5 py-1 text-[11px] font-semibold hover:opacity-80"
+                >
+                  + Add to today&apos;s note for doctor
+                </button>
+              </div>
+            ))}
+          </div>
         </section>
       )}
 

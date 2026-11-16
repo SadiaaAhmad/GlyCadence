@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, Clock, Moon } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Clock, Moon } from "lucide-react";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient } from "@/services/api";
 
@@ -52,6 +52,9 @@ export default function FastingPage() {
 
   return (
     <div className="space-y-6">
+      <Link href="/more" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#FF4D4D]">
+        <ArrowLeft className="h-4 w-4" /> Back to Care Tools
+      </Link>
       <div>
         <h1 className="font-display text-2xl sm:text-3xl font-semibold">Ramadan &amp; Fasting (Roza Guide)</h1>
         <p className="text-sm text-[var(--text-muted)]">

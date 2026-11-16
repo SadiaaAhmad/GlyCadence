@@ -865,3 +865,152 @@ def run_visit_notes_agent(
         needs_clinician=False,
         data_used={"question_count": len(questions[:5])},
     ).to_dict()
+
+
+# ---------------------------------------------------------------------------
+# 7. Mover (exercise) — ADA 2025 Physical Activity & Post-Meal Walk Agent
+# ---------------------------------------------------------------------------
+def run_mover_agent(
+    db: Session,
+    patient: Patient,
+    readings: list[GlucoseReading],
+    medications: list[Medication],
+) -> dict[str, Any]:
+    """ADA 2025 Type 2 diabetes weekly routine: 150 min aerobic + 2-3x resistance + 15m post-meal walks."""
+    from app.models import ActivityRecord
+
+    now_utc = datetime.now(timezone.utc)
+    week_start = now_utc - timedelta(days=7)
+    activities = list(
+        db.scalars(
+            select(ActivityRecord)
+            .where(ActivityRecord.patient_id == patient.id, ActivityRecord.recorded_at >= week_start)
+            .order_by(ActivityRecord.recorded_at.desc())
+        ).all()
+    )
+
+    total_min = sum(a.active_minutes or 0 for a in activities)
+    resistance_sessions = sum(1 for a in activities if (a.activity_type or "").lower() in ("strength", "resistance", "weights"))
+    active_days = len({a.recorded_at.date() for a in activities})
+
+    uses_hypo_med = any(
+        k in (m.drug_class or "").lower() or k in m.medication_name.lower()
+        for m in medications
+        for k in ("insulin", "sulfonylurea", "gliclazide", "glimepiride")
+    )
+
+    cgm_pts, _, _ = resolve_single_device_cgm_points(readings)
+    latest_val = cgm_pts[-1].glucose_mg_dl if cgm_pts else None
+
+    safety_note = (
+        "Check your sugar before brisk exercise: if below 100 mg/dL, have a small 15g snack first; carry fast sugar if you take insulin or Gliclazide."
+        if uses_hypo_med
+        else "Keep water nearby and wear comfortable, supportive footwear to protect your feet."
+    )
+    if latest_val is not None and latest_val >= 250.0:
+        safety_note = f"Your latest reading is {round(latest_val)} mg/dL (>=250): stick to gentle hydration and light movement until sugar settles."
+
+    weekly_plan = [
+        {"day": "Mon", "title": "25 min brisk walk + 15 min post-dinner stroll", "kind": "aerobic", "minutes": 40},
+        {"day": "Tue", "title": "20 min bodyweight strength (chair squats, wall push-ups)", "kind": "resistance", "minutes": 20},
+        {"day": "Wed", "title": "30 min steady walk (break sitting every 30 min)", "kind": "aerobic", "minutes": 30},
+        {"day": "Thu", "title": "20 min resistance band / light weights + stretches", "kind": "resistance", "minutes": 20},
+        {"day": "Fri", "title": "30 min brisk walk or cycling + 15 min post-lunch walk", "kind": "aerobic", "minutes": 45},
+        {"day": "Sat", "title": "25 min family walk + mobility stretch", "kind": "aerobic", "minutes": 25},
+        {"day": "Sun", "title": "Active recovery: 15 min gentle post-meal walk", "kind": "recovery", "minutes": 15},
+    ]
+
+    findings = [
+        SubAgentFinding(
+            id="mov_progress",
+            kind="exercise_progress",
+            plain_text_template="This week: {mins} of 150 aerobic target minutes logged across {days} day(s) ({res} resistance session(s)).",
+            values={"mins": round(total_min), "days": active_days, "res": resistance_sessions},
+            confidence="high",
+        ),
+        SubAgentFinding(
+            id="mov_safety",
+            kind="exercise_safety",
+            plain_text_template="{safety}",
+            values={"safety": safety_note},
+            confidence="high",
+        ),
+    ]
+
+    return AgentResult(
+        agent="exercise",
+        helper_name="Mover",
+        status="ok",
+        findings=findings,
+        cards=[
+            {
+                "type": "exercise_plan_card",
+                "weekly_minutes": round(total_min),
+                "target_minutes": 150,
+                "resistance_sessions": resistance_sessions,
+                "target_resistance": 2,
+                "active_days": active_days,
+                "safety_note": safety_note,
+                "weekly_plan": weekly_plan,
+                "recent_logs": [
+                    {
+                        "id": str(a.id),
+                        "activity_type": a.activity_type,
+                        "duration_min": a.active_minutes,
+                        "intensity": a.intensity,
+                        "logged_at": a.recorded_at.isoformat(),
+                    }
+                    for a in activities[:10]
+                ],
+            }
+        ],
+        needs_clinician=False,
+        data_used={"activity_logs": len(activities), "total_minutes": round(total_min)},
+    ).to_dict()
+
+
+def build_adaptive_wellbeing_questions(
+    readings: list[GlucoseReading],
+    wellbeing: list[WellbeingRecord],
+) -> list[dict[str, str]]:
+    """Generate adaptive physical & mental diabetes questions tailored to recent glucose & sleep records."""
+    cgm_pts, _, _ = resolve_single_device_cgm_points(readings)
+    highs = sum(1 for p in cgm_pts if p.glucose_mg_dl > 180.0)
+    lows = sum(1 for p in cgm_pts if p.glucose_mg_dl < 70.0)
+    short_sleeps = sum(1 for w in wellbeing if w.sleep_hours is not None and w.sleep_hours < 6.5)
+
+    questions: list[dict[str, str]] = []
+    if highs > 0:
+        questions.extend([
+            {
+                "id": "neuropathy",
+                "category": "Physical (Nerves & Feet)",
+                "question": "Since your sugar went above 180 mg/dL recently, have you felt any tingling, numbness, or burning in your toes or feet?",
+                "reason": "Early nerve check helps protect foot health when readings run high.",
+            },
+            {
+                "id": "vision_fatigue",
+                "category": "Physical (Eyes & Energy)",
+                "question": "Have you noticed blurred vision or heavy afternoon tiredness even after resting?",
+                "reason": "Fluctuating glucose can temporarily affect eye focus and cellular energy.",
+            },
+        ])
+    if lows > 0:
+        questions.append(
+            {
+                "id": "hypo_fear",
+                "category": "Mental (Low-Sugar Worry)",
+                "question": "After recent low readings (<70 mg/dL), are you feeling anxious at bedtime or eating extra snacks out of worry?",
+                "reason": "Fear of overnight lows is common and worth sharing so your doctor can simplify evening timing.",
+            }
+        )
+    if short_sleeps > 0 or not questions:
+        questions.append(
+            {
+                "id": "burnout_sleep",
+                "category": "Mental (Diabetes Distress & Sleep)",
+                "question": "How overwhelmed or tired have you felt keeping up with food, medicines, and checks this week?",
+                "reason": "Diabetes burnout affects sleep and cortisol; Kindred adjusts prompts if you need Gentle Mode.",
+            }
+        )
+    return questions[:4]
