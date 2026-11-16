@@ -333,49 +333,77 @@ def get_patient_meal_plan(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> MealPlanResponse:
+    from app.models import PatientPreferences
+
     patient = require_patient_access(patient_id, current_user, db, write=False)
     recipes, ings_by_recipe = _load_recipe_maps(db)
+    prefs = db.scalar(select(PatientPreferences).where(PatientPreferences.patient_id == patient.id))
 
-    # Evaluate patient's meals to compute personal timing reason & prefer lower-spike recipes
+    # Evaluate patient's meals & glucose track to personalize slots and recipe ranking
     meals = list(db.scalars(select(Meal).where(Meal.patient_id == patient.id).order_by(Meal.logged_at.desc())).all())
     readings = list(db.scalars(select(GlucoseReading).where(GlucoseReading.patient_id == patient.id).order_by(GlucoseReading.recorded_at.asc())).all())
     cgm_points, _, _ = resolve_single_device_cgm_points(readings)
     evals = evaluate_meal_responses(meals, cgm_points, allowed_provenances=frozenset({"native", "dataset_documented"}))
     eval_by_id = {e.meal_id: e for e in evals}
 
+    recent_vals = [float(r.glucose_mg_dl) for r in readings[-14:]]
+    latest_val = recent_vals[-1] if recent_vals else None
+    avg_val = mean(recent_vals) if recent_vals else None
+    has_highs = (latest_val is not None and latest_val >= 180) or (avg_val is not None and avg_val >= 155)
+    has_lows = any(v < 70 for v in recent_vals)
+
     meds = list(db.scalars(select(Medication).where(Medication.patient_id == patient.id, Medication.is_active.is_(True))).all())
     has_sulfo = any("sulfonylurea" in (m.drug_class or "").lower() for m in meds)
 
-    # Check dinner timing comparison
+    # Dynamic slot reasons tailored to this patient's track
     early_dinners = [eval_by_id[m.id].excursion_delta_mg_dl for m in meals if m.meal_type == "dinner" and m.logged_at.hour < 21 and m.id in eval_by_id and eval_by_id[m.id].excursion_delta_mg_dl is not None]
     late_dinners = [eval_by_id[m.id].excursion_delta_mg_dl for m in meals if m.meal_type == "dinner" and m.logged_at.hour >= 21 and m.id in eval_by_id and eval_by_id[m.id].excursion_delta_mg_dl is not None]
     if early_dinners and late_dinners:
         dinner_reason = f"Your dinners before 9 pm rose +{mean(early_dinners):.0f} mg/dL on average vs +{mean(late_dinners):.0f} mg/dL after 9 pm"
+    elif has_highs:
+        dinner_reason = f"Recent readings reached {round(latest_val or avg_val or 180)} mg/dL — prioritized lighter, low-GL dinners before 8:30 pm"
     else:
         dinner_reason = "Eating dinner by 8:30 pm leaves 2–3 hours before sleep for steadier nights"
 
-    breakfast_reason = (
-        "Consistent breakfast timing aligns with morning Gliclazide to reduce mid-morning dips"
-        if has_sulfo
-        else "Higher-protein breakfast within 1–2 hours of waking supports steady mornings"
-    )
+    if has_lows or has_sulfo:
+        breakfast_reason = "Steady protein + slow carbs to support morning medicines and prevent mid-morning dips"
+        lunch_reason = "Balanced daal/protein + moderate complex carbs for steady afternoon energy"
+        snack_reason = "Protein + fibre bridge to prevent late-afternoon drops before dinner"
+    elif has_highs:
+        breakfast_reason = "Low-sugar, high-protein breakfast to blunt morning rises"
+        lunch_reason = "Extra-low glycaemic load lunches paired with fibre to flatten afternoon spikes"
+        snack_reason = "Very low-carb, high-fibre snack options that keep post-snack sugar flat"
+    else:
+        breakfast_reason = "Higher-protein breakfast within 1–2 hours of waking supports steady mornings"
+        lunch_reason = "Measured carbs with daal/salad support steady afternoon curves"
+        snack_reason = "Light protein/fibre snack bridges the gap to dinner"
 
     slot_specs = [
         ("breakfast", "8:00 AM – 9:00 AM", breakfast_reason),
-        ("lunch", "1:00 PM – 2:00 PM", "Measured carbs with daal/salad showed steadier afternoon curves"),
-        ("snack", "4:30 PM – 5:30 PM", "Light protein/fibre snack bridges the gap to dinner"),
+        ("lunch", "1:00 PM – 2:00 PM", lunch_reason),
+        ("snack", "4:30 PM – 5:30 PM", snack_reason),
         ("dinner", "7:30 PM – 8:30 PM", dinner_reason),
     ]
+
+    def _score_recipe(ro: RecipeOut) -> float:
+        if has_highs:
+            s = ro.nutrition.estimated_gl * 2.0 + ro.nutrition.sugar_g - ro.nutrition.fibre_g * 0.8
+        elif has_lows or has_sulfo:
+            s = abs(ro.nutrition.carbs_g - 30.0) * 0.45 - ro.nutrition.protein_g * 0.6 - ro.nutrition.fibre_g * 0.5
+        else:
+            s = ro.nutrition.estimated_gl - ro.nutrition.protein_g * 0.3 - ro.nutrition.fibre_g * 0.4
+        if prefs and prefs.budget_tier == "low" and ro.cost_tier == "low":
+            s -= 3.0
+        return s
 
     slots_out: list[MealPlanSlotOut] = []
     for slot_name, win, reason in slot_specs:
         slot_recipes = [
             _serialize_recipe(r, ings_by_recipe)
             for r in recipes
-            if r.slot == slot_name
+            if r.slot == slot_name and not (prefs and prefs.vegetarian and "vegetarian" not in (r.tags or []))
         ]
-        # Rank lower-GL first
-        slot_recipes.sort(key=lambda ro: ro.nutrition.estimated_gl)
+        slot_recipes.sort(key=_score_recipe)
         slots_out.append(
             MealPlanSlotOut(
                 slot=slot_name,

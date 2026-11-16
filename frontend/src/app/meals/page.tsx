@@ -116,7 +116,7 @@ export default function MealsPage() {
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-1 bg-[var(--bg-muted)] p-1 rounded-full">
+        <div className="inline-flex flex-nowrap overflow-x-auto max-w-full gap-1 bg-[var(--bg-muted)] p-1 rounded-full shrink-0">
           {[
             { id: "plan", label: "My Plan" },
             { id: "log", label: "Log & History" },
@@ -127,10 +127,10 @@ export default function MealsPage() {
               key={t.id}
               type="button"
               onClick={() => setTab(t.id as "plan" | "log" | "ideas" | "chef")}
-              className={`whitespace-nowrap rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+              className={`whitespace-nowrap shrink-0 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
                 tab === t.id
-                  ? "bg-[#2B1E2F] text-white dark:bg-[#F2A93B] dark:text-[#2B1E2F]"
-                  : "text-[var(--text-muted)] hover:text-[var(--text-main)]"
+                  ? "bg-[#EF4444] text-white"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-ink)]"
               }`}
             >
               {t.label}

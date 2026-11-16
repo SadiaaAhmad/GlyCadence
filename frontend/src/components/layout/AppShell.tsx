@@ -40,8 +40,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen flex flex-col lg:flex-row bg-[var(--bg-page)] text-[var(--text-ink)]">
-      {/* Desktop Left Navigation Rail */}
-      <aside className="hidden lg:flex lg:w-64 lg:shrink-0 lg:flex-col lg:border-r lg:border-[var(--border-clay)] lg:bg-[var(--bg-card)] lg:px-4 lg:py-6">
+      {/* Desktop Left Navigation Rail (Pinned / Sticky) */}
+      <aside className="hidden lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-64 lg:shrink-0 lg:flex-col lg:overflow-y-auto lg:border-r lg:border-[var(--border-clay)] lg:bg-[var(--bg-card)] lg:px-4 lg:py-6">
         <div className="px-2 mb-7">
           <CadieLogo />
           <p className="mt-1 text-xs text-[var(--text-muted)]">Your daily diabetes companion</p>
@@ -56,13 +56,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 key={tab.href}
                 href={tab.href}
                 className={cn(
-                  "flex items-center gap-3 rounded-[14px] px-3.5 py-2.5 text-sm font-medium transition-colors",
+                  "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-colors",
                   active
-                    ? "bg-[#2B1E2F] text-white dark:bg-[#F2A93B] dark:text-[#2B1E2F]"
-                    : "text-[var(--text-ink)] hover:bg-[var(--bg-muted)]"
+                    ? "bg-[#EF4444]/12 text-[#EF4444] font-semibold"
+                    : "text-[var(--text-muted)] hover:bg-[var(--bg-muted)] hover:text-[var(--text-ink)]"
                 )}
               >
-                <Icon className={cn("h-4 w-4 shrink-0", active && "text-[#FF4D4D] dark:text-[#2B1E2F]")} />
+                <Icon className={cn("h-4 w-4 shrink-0", active && "text-[#EF4444]")} />
                 <span>{tab.label}</span>
               </Link>
             );
@@ -84,7 +84,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             onClick={toggleDark}
             className="w-full flex items-center justify-between rounded-[14px] border border-[var(--border-clay)] px-3.5 py-2 text-xs font-medium hover:bg-[var(--bg-muted)]"
           >
-            <span>{dark ? "Warm Light Mode" : "Deep Plum Dark"}</span>
+            <span>{dark ? "Light Mode" : "Dark Mode"}</span>
             {dark ? <Sun className="h-3.5 w-3.5 text-[#F2A93B]" /> : <Moon className="h-3.5 w-3.5" />}
           </button>
         </div>

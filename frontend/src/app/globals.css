@@ -3,29 +3,31 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --bg-page: #fbf6ef;
+  --bg-page: #faf9f6;
   --bg-card: #ffffff;
-  --bg-muted: #f4ece0;
-  --text-ink: #2b1e2f;
-  --text-muted: #705f75;
-  --border-clay: #e9dccb;
-  --cadie-coral: #ff4d4d;
-  --saffron: #f2a93b;
-  --terracotta: #c8553d;
-  --berry: #8e2c5a;
+  --bg-muted: #f2f0ec;
+  --text-ink: #18181b;
+  --text-main: #18181b;
+  --text-muted: #64748b;
+  --border-clay: #e5e2dc;
+  --cadie-coral: #ef4444;
+  --saffron: #d97706;
+  --terracotta: #dc2626;
+  --berry: #9f1239;
 }
 
 .dark {
-  --bg-page: #1c1420;
-  --bg-card: #2a1f2e;
-  --bg-muted: #35273b;
-  --text-ink: #fbf6ef;
-  --text-muted: #b8a8be;
-  --border-clay: #43324a;
-  --cadie-coral: #ff5c5c;
-  --saffron: #f2a93b;
-  --terracotta: #e06d54;
-  --berry: #d16594;
+  --bg-page: #0d1015;
+  --bg-card: #151921;
+  --bg-muted: #1e2430;
+  --text-ink: #f4f4f5;
+  --text-main: #f4f4f5;
+  --text-muted: #94a3b8;
+  --border-clay: #262c38;
+  --cadie-coral: #ef4444;
+  --saffron: #f59e0b;
+  --terracotta: #f87171;
+  --berry: #fb7185;
 }
 
 body {
@@ -47,6 +49,6 @@ body {
 .gc-card {
   background-color: var(--bg-card);
   border: 1px solid var(--border-clay);
-  border-radius: 20px;
-  box-shadow: 0 2px 12px rgba(43, 30, 47, 0.06);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
