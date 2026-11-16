@@ -1,19 +1,25 @@
 import 'package:flutter/material.dart';
 
 class GlyCadenceTheme {
-  static const Color slateTeal = Color(0xFF0F4C5C);
+  static const Color ink = Color(0xFF2B1E2F);
+  static const Color cream = Color(0xFFFBF6EF);
+  static const Color clay = Color(0xFFE9DCCB);
+  static const Color darkPlumBg = Color(0xFF1C1420);
+  static const Color darkPlumCard = Color(0xFF2A1F2E);
+  static const Color darkBorder = Color(0xFF43324A);
   static const Color coral = Color(0xFFFF4D4D);
-  static const Color lightBg = Color(0xFFFBFBFD);
-  static const Color darkBg = Color(0xFF090D16);
+  static const Color saffron = Color(0xFFF2A93B);
+  static const Color terracotta = Color(0xFFC8553D);
+  static const Color berry = Color(0xFF8E2C5A);
 
   static ThemeData light() {
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.light,
-      scaffoldBackgroundColor: lightBg,
+      scaffoldBackgroundColor: cream,
       colorScheme: ColorScheme.fromSeed(
-        seedColor: slateTeal,
-        primary: slateTeal,
+        seedColor: coral,
+        primary: ink,
         secondary: coral,
         surface: Colors.white,
         brightness: Brightness.light,
@@ -23,7 +29,7 @@ class GlyCadenceTheme {
         color: Colors.white,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
-          side: const BorderSide(color: Color(0xFFE2E8F0), width: 1),
+          side: const BorderSide(color: clay, width: 1),
         ),
       ),
     );
@@ -33,20 +39,20 @@ class GlyCadenceTheme {
     return ThemeData(
       useMaterial3: true,
       brightness: Brightness.dark,
-      scaffoldBackgroundColor: darkBg,
+      scaffoldBackgroundColor: darkPlumBg,
       colorScheme: ColorScheme.fromSeed(
-        seedColor: slateTeal,
-        primary: const Color(0xFF2B8A9E),
+        seedColor: coral,
+        primary: saffron,
         secondary: coral,
-        surface: const Color(0xFF111827),
+        surface: darkPlumCard,
         brightness: Brightness.dark,
       ),
       cardTheme: CardThemeData(
         elevation: 0,
-        color: const Color(0xFF111827),
+        color: darkPlumCard,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(20),
-          side: const BorderSide(color: Color(0xFF1E293B), width: 1),
+          side: const BorderSide(color: darkBorder, width: 1),
         ),
       ),
     );

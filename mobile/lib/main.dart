@@ -20,7 +20,7 @@ class GlyCadenceApp extends StatefulWidget {
 }
 
 class _GlyCadenceAppState extends State<GlyCadenceApp> {
-  ThemeMode _themeMode = ThemeMode.system;
+  ThemeMode _themeMode = ThemeMode.light;
 
   void _toggleTheme() {
     setState(() {
@@ -33,27 +33,8 @@ class _GlyCadenceAppState extends State<GlyCadenceApp> {
     return MaterialApp(
       title: 'GlyCadence',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.light,
-        scaffoldBackgroundColor: GlyCadenceTheme.lightBg,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: GlyCadenceTheme.slateTeal,
-          primary: GlyCadenceTheme.slateTeal,
-          secondary: GlyCadenceTheme.coral,
-        ),
-      ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: GlyCadenceTheme.darkBg,
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: GlyCadenceTheme.slateTeal,
-          primary: const Color(0xFF2B8A9E),
-          secondary: GlyCadenceTheme.coral,
-          brightness: Brightness.dark,
-        ),
-      ),
+      theme: GlyCadenceTheme.light(),
+      darkTheme: GlyCadenceTheme.dark(),
       themeMode: _themeMode,
       home: GlyCadenceHome(
         apiClient: widget.apiClient,
@@ -84,28 +65,31 @@ class _GlyCadenceHomeState extends State<GlyCadenceHome> {
 
   List<PatientSummary> _patients = [];
   PatientSummary? _selectedPatient;
+  TodayOverviewData? _overview;
+  GlucoseReadingsData? _readings;
   GlucoseSummary? _summary;
-  List<MealResponseItem> _meals = [];
-  List<InvestigationRun> _investigations = [];
-  InvestigationRun? _activeRun;
+  List<RecipeItem> _recipes = [];
+  String? _initialChatPrompt;
 
   @override
   void initState() {
     super.initState();
     if (widget.apiClient.isAuthenticated) {
-      _loadPatients();
+      _loadInitial();
     }
   }
 
-  Future<void> _loadPatients() async {
+  Future<void> _loadInitial() async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final list = await widget.apiClient.listPatients();
+      final recs = await widget.apiClient.listRecipes();
       setState(() {
         _patients = list;
+        _recipes = recs;
         _selectedPatient = list.isNotEmpty ? list.first : null;
       });
       if (_selectedPatient != null) {
@@ -118,23 +102,21 @@ class _GlyCadenceHomeState extends State<GlyCadenceHome> {
     }
   }
 
-  Future<void> _loadPatientData(String patientId) async {
+  Future<void> _loadPatientData(String patientId, {int days = 7}) async {
     setState(() {
       _loading = true;
       _error = null;
     });
     try {
       final results = await Future.wait([
+        widget.apiClient.getTodayOverview(patientId),
+        widget.apiClient.getGlucoseReadings(patientId, days: days),
         widget.apiClient.getAnalyticsSummary(patientId),
-        widget.apiClient.getMealResponses(patientId),
-        widget.apiClient.listInvestigations(patientId),
       ]);
-      final invs = results[2] as List<InvestigationRun>;
       setState(() {
-        _summary = results[0] as GlucoseSummary;
-        _meals = results[1] as List<MealResponseItem>;
-        _investigations = invs;
-        _activeRun = invs.isNotEmpty ? invs.first : null;
+        _overview = results[0] as TodayOverviewData;
+        _readings = results[1] as GlucoseReadingsData;
+        _summary = results[2] as GlucoseSummary;
       });
     } catch (e) {
       setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
@@ -143,27 +125,17 @@ class _GlyCadenceHomeState extends State<GlyCadenceHome> {
     }
   }
 
-  Future<void> _runInvestigation({bool simulateBadDraft = false}) async {
+  void _openMealDetail(String recipeId) {
     if (_selectedPatient == null) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-    });
-    try {
-      final run = await widget.apiClient.runInvestigation(
-        _selectedPatient!.id,
-        simulateBadDraft: simulateBadDraft,
-      );
-      setState(() {
-        _activeRun = run;
-        _investigations = [run, ..._investigations];
-        _tabIndex = 1;
-      });
-    } catch (e) {
-      setState(() => _error = e.toString().replaceFirst('Exception: ', ''));
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => MealDetailScreen(
+          apiClient: widget.apiClient,
+          patientId: _selectedPatient!.id,
+          recipeId: recipeId,
+        ),
+      ),
+    );
   }
 
   @override
@@ -173,7 +145,7 @@ class _GlyCadenceHomeState extends State<GlyCadenceHome> {
         apiClient: widget.apiClient,
         onLoggedIn: () {
           setState(() {});
-          _loadPatients();
+          _loadInitial();
         },
         onOpenSettings: () => Navigator.of(context).push(
           MaterialPageRoute(
@@ -183,41 +155,56 @@ class _GlyCadenceHomeState extends State<GlyCadenceHome> {
       );
     }
 
-    final pages = [
-      _DashboardTab(
-        patients: _patients,
-        selectedPatient: _selectedPatient,
-        summary: _summary,
-        meals: _meals,
+    final tabs = [
+      _TodayTab(
+        patient: _selectedPatient,
+        overview: _overview,
+        readings: _readings,
         loading: _loading,
         error: _error,
+        onRefresh: () => _selectedPatient != null
+            ? _loadPatientData(_selectedPatient!.id)
+            : _loadInitial(),
+        onOpenMeal: _openMealDetail,
+        onAskCadie: (prompt) {
+          setState(() {
+            _initialChatPrompt = prompt;
+            _tabIndex = 1;
+          });
+        },
+      ),
+      _AskCadieTab(
+        apiClient: widget.apiClient,
+        patientId: _selectedPatient?.id,
+        initialPrompt: _initialChatPrompt,
+        onConsumePrompt: () => _initialChatPrompt = null,
+        onOpenMeal: _openMealDetail,
+      ),
+      _GlucoseTab(
+        readings: _readings,
+        summary: _summary,
+        onChangeDays: (d) {
+          if (_selectedPatient != null) _loadPatientData(_selectedPatient!.id, days: d);
+        },
+      ),
+      _MealsTab(
+        recipes: _recipes,
+        onOpenRecipe: _openMealDetail,
+      ),
+      _MoreTab(
+        apiClient: widget.apiClient,
+        patients: _patients,
+        selectedPatient: _selectedPatient,
         onSelectPatient: (p) {
           setState(() => _selectedPatient = p);
           _loadPatientData(p.id);
         },
-        onRefresh: () =>
-            _selectedPatient != null ? _loadPatientData(_selectedPatient!.id) : _loadPatients(),
-        onRunInvestigation: () => _runInvestigation(),
-      ),
-      _InvestigationTab(
-        patient: _selectedPatient,
-        activeRun: _activeRun,
-        history: _investigations,
-        loading: _loading,
-        onRunNormal: () => _runInvestigation(simulateBadDraft: false),
-        onRunBadDraft: () => _runInvestigation(simulateBadDraft: true),
-        onSelectRun: (run) => setState(() => _activeRun = run),
-      ),
-      SettingsScreen(
-        apiClient: widget.apiClient,
-        embedded: true,
         onLogout: () async {
           await widget.apiClient.logout();
           setState(() {
             _patients = [];
             _selectedPatient = null;
-            _summary = null;
-            _activeRun = null;
+            _overview = null;
           });
         },
       ),
@@ -225,66 +212,59 @@ class _GlyCadenceHomeState extends State<GlyCadenceHome> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Row(
-          children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration: const BoxDecoration(
-                color: GlyCadenceTheme.coral,
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 8),
-            const Text.rich(
+        title: const Text.rich(
+          TextSpan(
+            children: [
               TextSpan(
-                children: [
-                  TextSpan(
-                    text: 'Gly',
-                    style: TextStyle(
-                      color: GlyCadenceTheme.slateTeal,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  TextSpan(
-                    text: 'Cadence',
-                    style: TextStyle(
-                      color: GlyCadenceTheme.coral,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ],
+                text: 'Gly',
+                style: TextStyle(fontWeight: FontWeight.w800),
               ),
-            ),
-          ],
+              TextSpan(
+                text: 'Cadence',
+                style: TextStyle(
+                  color: GlyCadenceTheme.coral,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           IconButton(
             icon: const Icon(Icons.brightness_6_outlined),
-            tooltip: 'Toggle theme',
+            tooltip: 'Toggle Saffron/Plum theme',
             onPressed: widget.onToggleTheme,
           ),
         ],
       ),
-      body: pages[_tabIndex],
+      body: tabs[_tabIndex],
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tabIndex,
         onDestinationSelected: (i) => setState(() => _tabIndex = i),
         destinations: const [
           NavigationDestination(
-            icon: Icon(Icons.dashboard_outlined),
-            selectedIcon: Icon(Icons.dashboard),
-            label: 'Dashboard',
+            icon: Icon(Icons.home_outlined),
+            selectedIcon: Icon(Icons.home),
+            label: 'Today',
           ),
           NavigationDestination(
-            icon: Icon(Icons.psychology_outlined),
-            selectedIcon: Icon(Icons.psychology),
-            label: 'Investigation',
+            icon: Icon(Icons.chat_bubble_outline),
+            selectedIcon: Icon(Icons.chat_bubble),
+            label: 'Ask Cadie',
           ),
           NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Settings',
+            icon: Icon(Icons.show_chart),
+            label: 'Glucose',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.restaurant_menu_outlined),
+            selectedIcon: Icon(Icons.restaurant_menu),
+            label: 'Meals',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.grid_view_outlined),
+            selectedIcon: Icon(Icons.grid_view),
+            label: 'More',
           ),
         ],
       ),
@@ -353,14 +333,13 @@ class _LoginScreenState extends State<LoginScreen> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
             child: Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
               child: Padding(
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      _isRegister ? 'Create GlyCadence Account' : 'Sign in to GlyCadence',
+                      _isRegister ? 'Create GlyCadence Account' : 'Welcome back',
                       style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(height: 6),
@@ -390,7 +369,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       const SizedBox(height: 12),
                       Text(
                         _error!,
-                        style: const TextStyle(color: GlyCadenceTheme.coral, fontSize: 13),
+                        style: const TextStyle(color: GlyCadenceTheme.berry, fontSize: 13),
                       ),
                     ],
                     const SizedBox(height: 18),
@@ -435,383 +414,96 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 }
 
-class _DashboardTab extends StatelessWidget {
-  final List<PatientSummary> patients;
-  final PatientSummary? selectedPatient;
-  final GlucoseSummary? summary;
-  final List<MealResponseItem> meals;
+class _TodayTab extends StatelessWidget {
+  final PatientSummary? patient;
+  final TodayOverviewData? overview;
+  final GlucoseReadingsData? readings;
   final bool loading;
   final String? error;
-  final ValueChanged<PatientSummary> onSelectPatient;
   final VoidCallback onRefresh;
-  final VoidCallback onRunInvestigation;
+  final ValueChanged<String> onOpenMeal;
+  final ValueChanged<String> onAskCadie;
 
-  const _DashboardTab({
-    required this.patients,
-    required this.selectedPatient,
-    required this.summary,
-    required this.meals,
+  const _TodayTab({
+    required this.patient,
+    required this.overview,
+    required this.readings,
     required this.loading,
     required this.error,
-    required this.onSelectPatient,
     required this.onRefresh,
-    required this.onRunInvestigation,
+    required this.onOpenMeal,
+    required this.onAskCadie,
   });
-
-  String _fmt(double? v, {String suffix = ''}) {
-    if (v == null) return '—';
-    return '${v.toStringAsFixed(1)}$suffix';
-  }
 
   @override
   Widget build(BuildContext context) {
+    final askController = TextEditingController();
+    final latest = overview?.latestMgDl ?? readings?.latestMgDl;
+    final pts = (readings?.readings ?? []).take(48).toList();
+
     return RefreshIndicator(
       onRefresh: () async => onRefresh(),
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          if (patients.isNotEmpty)
-            Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    value: selectedPatient?.id,
-                    items: patients
-                        .map(
-                          (p) => DropdownMenuItem(
-                            value: p.id,
-                            child: Text(
-                              '${p.displayName} (${p.cohortType})',
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (id) {
-                      if (id == null) return;
-                      final match = patients.firstWhere((p) => p.id == id);
-                      onSelectPatient(match);
-                    },
-                  ),
-                ),
-              ),
+          if (patient != null) ...[
+            Text(
+              'Hello, ${patient!.displayName.split(' ').first}',
+              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
-          if (selectedPatient?.isResearchDataset == true) ...[
-            const SizedBox(height: 8),
-            Chip(
-              avatar: const Icon(Icons.science_outlined, size: 18, color: GlyCadenceTheme.coral),
-              label: const Text('Research Dataset (Read-Only) · dataset_documented'),
-            ),
-          ],
-          if (error != null) ...[
-            const SizedBox(height: 12),
-            Card(
-              color: Colors.red.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Text(error!, style: TextStyle(color: Colors.red.shade900)),
-              ),
-            ),
-          ],
-          if (loading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 20),
-              child: Center(child: CircularProgressIndicator()),
-            ),
-          if (summary != null) ...[
-            const SizedBox(height: 12),
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 10,
-              crossAxisSpacing: 10,
-              childAspectRatio: 1.55,
-              children: [
-                _MetricCard('TIR (70–180)', _fmt(summary!.tirPct, suffix: '%'), Colors.teal),
-                _MetricCard('TBR (<70)', _fmt(summary!.tbrPct, suffix: '%'), GlyCadenceTheme.coral),
-                _MetricCard('TAR (>180)', _fmt(summary!.tarPct, suffix: '%'), Colors.amber.shade800),
-                _MetricCard('CV%', _fmt(summary!.cvPct, suffix: '%'), GlyCadenceTheme.slateTeal),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Provenance & Coverage',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                    ),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      runSpacing: 6,
-                      children: [
-                        Chip(label: Text('Coverage: ${summary!.periodCoveragePct.toStringAsFixed(1)}%')),
-                        ...summary!.provenanceCounts.entries.map(
-                          (e) => Chip(label: Text('${e.key}: ${e.value}')),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 12),
-            Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Meal Excursion Preview (mg/dL)',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
-                    ),
-                    const SizedBox(height: 12),
-                    SizedBox(
-                      height: 180,
-                      child: _GlucoseBarChart(meals: meals, meanGlucose: summary!.meanGlucoseMgDl),
-                    ),
-                  ],
-                ),
-              ),
+            const SizedBox(height: 4),
+            Text(
+              overview?.greetingLine ?? 'Your daily diabetes summary is ready.',
+              style: Theme.of(context).textTheme.bodyMedium,
             ),
             const SizedBox(height: 14),
-            FilledButton.icon(
-              onPressed: loading ? null : onRunInvestigation,
-              icon: const Icon(Icons.play_arrow_rounded),
-              label: const Text('Run Multi-Agent Investigation'),
-              style: FilledButton.styleFrom(
-                backgroundColor: GlyCadenceTheme.slateTeal,
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+          ],
+          if (error != null)
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Text(error!, style: const TextStyle(color: GlyCadenceTheme.berry)),
               ),
             ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _MetricCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final Color color;
-
-  const _MetricCard(this.label, this.value, this.color);
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(label, style: Theme.of(context).textTheme.bodySmall),
-            const SizedBox(height: 6),
-            Text(
-              value,
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: color),
+          if (loading)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 16),
+              child: Center(child: CircularProgressIndicator()),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _GlucoseBarChart extends StatelessWidget {
-  final List<MealResponseItem> meals;
-  final double? meanGlucose;
-
-  const _GlucoseBarChart({required this.meals, required this.meanGlucose});
-
-  @override
-  Widget build(BuildContext context) {
-    final validMeals = meals
-        .where((m) => m.peakGlucoseMgDl != null)
-        .take(6)
-        .toList();
-    if (validMeals.isEmpty) {
-      final baseline = meanGlucose ?? 120.0;
-      return LineChart(
-        LineChartData(
-          gridData: const FlGridData(show: true),
-          titlesData: const FlTitlesData(show: false),
-          borderData: FlBorderData(show: false),
-          lineBarsData: [
-            LineChartBarData(
-              spots: [
-                FlSpot(0, baseline - 8),
-                FlSpot(1, baseline + 6),
-                FlSpot(2, baseline + 12),
-                FlSpot(3, baseline),
-              ],
-              isCurved: true,
-              color: GlyCadenceTheme.slateTeal,
-              barWidth: 3,
-            ),
-          ],
-        ),
-      );
-    }
-
-    return BarChart(
-      BarChartData(
-        gridData: const FlGridData(show: true),
-        borderData: FlBorderData(show: false),
-        titlesData: FlTitlesData(
-          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          bottomTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              getTitlesWidget: (val, _) {
-                final idx = val.toInt();
-                if (idx < 0 || idx >= validMeals.length) return const SizedBox.shrink();
-                return Text('M${idx + 1}', style: const TextStyle(fontSize: 10));
-              },
-            ),
-          ),
-        ),
-        barGroups: List.generate(validMeals.length, (i) {
-          return BarChartGroupData(
-            x: i,
-            barRods: [
-              BarChartRodData(
-                toY: validMeals[i].peakGlucoseMgDl ?? 0,
-                color: GlyCadenceTheme.coral,
-                width: 16,
-                borderRadius: BorderRadius.circular(6),
-              ),
-            ],
-          );
-        }),
-      ),
-    );
-  }
-}
-
-class _InvestigationTab extends StatelessWidget {
-  final PatientSummary? patient;
-  final InvestigationRun? activeRun;
-  final List<InvestigationRun> history;
-  final bool loading;
-  final VoidCallback onRunNormal;
-  final VoidCallback onRunBadDraft;
-  final ValueChanged<InvestigationRun> onSelectRun;
-
-  const _InvestigationTab({
-    required this.patient,
-    required this.activeRun,
-    required this.history,
-    required this.loading,
-    required this.onRunNormal,
-    required this.onRunBadDraft,
-    required this.onSelectRun,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: FilledButton.icon(
-                onPressed: patient == null || loading ? null : onRunNormal,
-                icon: const Icon(Icons.play_arrow),
-                label: const Text('Run Investigation'),
-                style: FilledButton.styleFrom(backgroundColor: GlyCadenceTheme.slateTeal),
-              ),
-            ),
-            const SizedBox(width: 10),
-            OutlinedButton(
-              onPressed: patient == null || loading ? null : onRunBadDraft,
-              child: const Text('Bad Draft Demo'),
-            ),
-          ],
-        ),
-        const SizedBox(height: 14),
-        if (activeRun == null)
-          const Card(
-            child: Padding(
-              padding: EdgeInsets.all(20),
-              child: Text('No investigation run selected yet. Tap Run Investigation above.'),
-            ),
-          )
-        else ...[
           Card(
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(18),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 6,
+                  const Text('Latest Glucose', style: TextStyle(fontSize: 13)),
+                  const SizedBox(height: 4),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.baseline,
+                    textBaseline: TextBaseline.alphabetic,
                     children: [
-                      Chip(label: Text('mode: ${activeRun!.executionMode}')),
-                      Chip(label: Text('model: ${activeRun!.modelUsed}')),
-                      Chip(
-                        backgroundColor: activeRun!.safetyPassed
-                            ? Colors.teal.shade50
-                            : Colors.red.shade50,
-                        label: Text(
-                          activeRun!.safetyPassed ? 'Verifier: PASSED' : 'Verifier: REJECTED',
-                        ),
+                      Text(
+                        latest != null ? '${latest.round()}' : '—',
+                        style: const TextStyle(fontSize: 44, fontWeight: FontWeight.w800),
                       ),
+                      const SizedBox(width: 6),
+                      const Text('mg/dL'),
+                      const Spacer(),
+                      if (overview?.tirPct != null)
+                        Chip(
+                          backgroundColor: GlyCadenceTheme.saffron.withValues(alpha: 0.2),
+                          label: Text('In target: ${overview!.tirPct!.toStringAsFixed(1)}%'),
+                        ),
                     ],
                   ),
-                  if (activeRun!.executionMode == 'deterministic_fallback') ...[
-                    const SizedBox(height: 10),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.amber.shade50,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Text(
-                        'Not AI-Generated: Deterministic Template Fallback active.',
-                        style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12),
-                      ),
-                    ),
-                  ],
-                  const SizedBox(height: 12),
-                  const Text('Patient Summary', style: TextStyle(fontWeight: FontWeight.bold)),
-                  const SizedBox(height: 4),
-                  Text(
-                    activeRun!.isSafeToDisplay && activeRun!.primarySummaryPatient != null
-                        ? activeRun!.primarySummaryPatient!
-                        : 'Narrative suppressed by Safety Verifier (${activeRun!.verifierReport.failedReasons.join(', ')}).',
-                  ),
-                  if (activeRun!.isSafeToDisplay && activeRun!.clinicianQuestions.isNotEmpty) ...[
+                  if (pts.length >= 2) ...[
                     const SizedBox(height: 12),
-                    const Text(
-                      'Suggested Questions for Clinician',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    const SizedBox(height: 4),
-                    ...activeRun!.clinicianQuestions.map(
-                      (q) => Padding(
-                        padding: const EdgeInsets.only(bottom: 4),
-                        child: Text('• $q'),
+                    SizedBox(
+                      height: 130,
+                      child: _SaffronLineChart(
+                        points: pts,
+                        low: readings?.targetLow ?? 70,
+                        high: readings?.targetHigh ?? 180,
                       ),
                     ),
                   ],
@@ -819,63 +511,794 @@ class _InvestigationTab extends StatelessWidget {
               ),
             ),
           ),
-          if (activeRun!.trace.isNotEmpty) ...[
+          if (overview?.featuredRecipe != null) ...[
             const SizedBox(height: 12),
             Card(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text('Agent Trace Timeline', style: TextStyle(fontWeight: FontWeight.bold)),
-                    const SizedBox(height: 8),
-                    ...activeRun!.trace.map(
-                      (step) => ListTile(
-                        dense: true,
-                        contentPadding: EdgeInsets.zero,
-                        leading: Icon(
-                          step.status == 'rejected' ? Icons.error_outline : Icons.check_circle_outline,
-                          color: step.status == 'rejected' ? GlyCadenceTheme.coral : Colors.teal,
+              child: ListTile(
+                contentPadding: const EdgeInsets.all(12),
+                leading: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.network(
+                    overview!.featuredRecipe!['image_url'] as String? ?? '',
+                    width: 60,
+                    height: 60,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => const Icon(Icons.restaurant, size: 36),
+                  ),
+                ),
+                title: Text(overview!.featuredRecipe!['name'] as String? ?? ''),
+                subtitle: Text(
+                  '${overview!.featuredRecipe!['carbs_g']}g carbs · ${overview!.featuredRecipe!['sugar_g']}g sugar',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => onOpenMeal(overview!.featuredRecipe!['recipe_id'] as String),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: askController,
+                      decoration: const InputDecoration(
+                        hintText: 'Ask Cadie about meals, lows, or Ramadan...',
+                        border: InputBorder.none,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.send, color: GlyCadenceTheme.coral),
+                    onPressed: () {
+                      final q = askController.text.trim();
+                      onAskCadie(q.isEmpty ? 'How has my glucose been this week?' : q);
+                    },
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SaffronLineChart extends StatelessWidget {
+  final List<GlucoseReadingPoint> points;
+  final double low;
+  final double high;
+
+  const _SaffronLineChart({
+    required this.points,
+    required this.low,
+    required this.high,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final spots = List.generate(
+      points.length,
+      (i) => FlSpot(i.toDouble(), points[i].glucoseMgDl),
+    );
+    return LineChart(
+      LineChartData(
+        minY: 50,
+        maxY: 230,
+        gridData: const FlGridData(show: true),
+        titlesData: const FlTitlesData(show: false),
+        borderData: FlBorderData(show: false),
+        rangeAnnotations: RangeAnnotations(
+          horizontalRangeAnnotations: [
+            HorizontalRangeAnnotation(
+              y1: low,
+              y2: high,
+              color: GlyCadenceTheme.saffron.withValues(alpha: 0.18),
+            ),
+          ],
+        ),
+        lineBarsData: [
+          LineChartBarData(
+            spots: spots,
+            isCurved: true,
+            color: GlyCadenceTheme.coral,
+            barWidth: 2.5,
+            dotData: const FlDotData(show: false),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AskCadieTab extends StatefulWidget {
+  final ApiClient apiClient;
+  final String? patientId;
+  final String? initialPrompt;
+  final VoidCallback onConsumePrompt;
+  final ValueChanged<String> onOpenMeal;
+
+  const _AskCadieTab({
+    required this.apiClient,
+    required this.patientId,
+    required this.initialPrompt,
+    required this.onConsumePrompt,
+    required this.onOpenMeal,
+  });
+
+  @override
+  State<_AskCadieTab> createState() => _AskCadieTabState();
+}
+
+class _AskCadieTabState extends State<_AskCadieTab> {
+  final _ctrl = TextEditingController();
+  List<ChatSessionItem> _sessions = [];
+  String? _activeSessionId;
+  List<ChatMessageItem> _messages = [];
+  List<dynamic> _lastHelpers = [];
+  bool _sending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initSessions();
+  }
+
+  Future<void> _initSessions() async {
+    if (widget.patientId == null) return;
+    final list = await widget.apiClient.listChatSessions(widget.patientId!);
+    setState(() {
+      _sessions = list;
+      _activeSessionId = list.isNotEmpty ? list.first.id : null;
+    });
+    if (_activeSessionId != null) {
+      await _loadMessages();
+    }
+    if (widget.initialPrompt != null && widget.initialPrompt!.isNotEmpty) {
+      final p = widget.initialPrompt!;
+      widget.onConsumePrompt();
+      await _send(p);
+    }
+  }
+
+  Future<void> _loadMessages() async {
+    if (widget.patientId == null || _activeSessionId == null) return;
+    final msgs = await widget.apiClient.getChatMessages(widget.patientId!, _activeSessionId!);
+    setState(() => _messages = msgs);
+  }
+
+  Future<void> _send(String text) async {
+    if (widget.patientId == null || text.trim().isEmpty || _sending) return;
+    setState(() => _sending = true);
+    try {
+      String sid = _activeSessionId ?? '';
+      if (sid.isEmpty) {
+        final created = await widget.apiClient.createChatSession(
+          widget.patientId!,
+          title: text.trim().substring(0, text.trim().length > 40 ? 40 : text.trim().length),
+        );
+        sid = created.id;
+        _activeSessionId = sid;
+      }
+      final turn = await widget.apiClient.sendChatMessage(widget.patientId!, sid, text.trim());
+      final pMsg = ChatMessageItem.fromJson(turn['patient_message'] as Map<String, dynamic>);
+      final cMsg = ChatMessageItem.fromJson(turn['cadie_message'] as Map<String, dynamic>);
+      setState(() {
+        _messages = [..._messages, pMsg, cMsg];
+        _lastHelpers = turn['helpers_used'] as List<dynamic>? ?? [];
+      });
+    } finally {
+      if (mounted) setState(() => _sending = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  hint: const Text('Saved conversations'),
+                  value: _activeSessionId,
+                  items: _sessions
+                      .map((s) => DropdownMenuItem(value: s.id, child: Text(s.title, overflow: TextOverflow.ellipsis)))
+                      .toList(),
+                  onChanged: (id) {
+                    setState(() => _activeSessionId = id);
+                    _loadMessages();
+                  },
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.add_comment_outlined, color: GlyCadenceTheme.coral),
+                onPressed: () async {
+                  if (widget.patientId == null) return;
+                  final created = await widget.apiClient.createChatSession(widget.patientId!);
+                  setState(() {
+                    _sessions = [created, ..._sessions];
+                    _activeSessionId = created.id;
+                    _messages = [];
+                  });
+                },
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(12),
+            itemCount: _messages.length,
+            itemBuilder: (_, i) {
+              final m = _messages[i];
+              final isMe = m.role == 'patient';
+              return Align(
+                alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                child: Container(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  padding: const EdgeInsets.all(14),
+                  constraints: const BoxConstraints(maxWidth: 340),
+                  decoration: BoxDecoration(
+                    color: isMe ? GlyCadenceTheme.ink : Theme.of(context).cardColor,
+                    borderRadius: BorderRadius.circular(18),
+                    border: isMe ? null : Border.all(color: GlyCadenceTheme.clay),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        m.content,
+                        style: TextStyle(color: isMe ? Colors.white : null),
+                      ),
+                      for (final card in m.cards)
+                        if (card['type'] == 'meal_card')
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: ActionChip(
+                              label: Text(card['name'] as String? ?? 'View Meal'),
+                              onPressed: () => widget.onOpenMeal(card['recipe_id'] as String),
+                            ),
+                          )
+                        else if (card['type'] == 'urgent_card')
+                          Container(
+                            margin: const EdgeInsets.only(top: 8),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: GlyCadenceTheme.berry.withValues(alpha: 0.14),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: const Text(
+                              'Urgent 15-15 Rule Active — Take 15g fast sugar and recheck in 15 min.',
+                              style: TextStyle(fontWeight: FontWeight.bold, color: GlyCadenceTheme.berry),
+                            ),
+                          ),
+                      if (!isMe) ...[
+                        const SizedBox(height: 6),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Checked by Safety Check',
+                              style: TextStyle(fontSize: 11, color: Colors.teal),
+                            ),
+                            if (_lastHelpers.isNotEmpty)
+                              TextButton(
+                                onPressed: () => showDialog(
+                                  context: context,
+                                  builder: (_) => AlertDialog(
+                                    title: const Text('Behind this answer'),
+                                    content: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: _lastHelpers
+                                          .map((h) => Text('• ${h['helper']}: ${h['summary']}'))
+                                          .toList(),
+                                    ),
+                                  ),
+                                ),
+                                child: const Text('Behind this answer', style: TextStyle(fontSize: 11)),
+                              ),
+                          ],
                         ),
-                        title: Text(step.node, style: const TextStyle(fontWeight: FontWeight.w600)),
-                        subtitle: Text(step.summary),
-                        trailing: Text('${step.evidenceCount} ev'),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        if (_sending) const LinearProgressIndicator(color: GlyCadenceTheme.coral),
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _ctrl,
+                  decoration: const InputDecoration(
+                    hintText: 'Ask Cadie...',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _sending
+                    ? null
+                    : () {
+                        final t = _ctrl.text;
+                        _ctrl.clear();
+                        _send(t);
+                      },
+                style: FilledButton.styleFrom(backgroundColor: GlyCadenceTheme.coral),
+                child: const Icon(Icons.send, color: Colors.white),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _GlucoseTab extends StatelessWidget {
+  final GlucoseReadingsData? readings;
+  final GlucoseSummary? summary;
+  final ValueChanged<int> onChangeDays;
+
+  const _GlucoseTab({
+    required this.readings,
+    required this.summary,
+    required this.onChangeDays,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pts = readings?.readings ?? [];
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Wrap(
+          spacing: 8,
+          children: [1, 7, 14, 30]
+              .map(
+                (d) => ChoiceChip(
+                  label: Text(d == 1 ? 'Today' : '${d}d'),
+                  selected: false,
+                  onSelected: (_) => onChangeDays(d),
+                ),
+              )
+              .toList(),
+        ),
+        const SizedBox(height: 12),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(readings?.sourceSummary ?? 'Sensor Curve',
+                    style: const TextStyle(fontWeight: FontWeight.bold)),
+                const SizedBox(height: 12),
+                SizedBox(
+                  height: 200,
+                  child: pts.length >= 2
+                      ? _SaffronLineChart(
+                          points: pts,
+                          low: readings?.targetLow ?? 70,
+                          high: readings?.targetHigh ?? 180,
+                        )
+                      : const Center(child: Text('No readings loaded yet.')),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (summary != null)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Time in Range', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 12,
+                    children: [
+                      Text('Below 70: ${summary!.tbrPct?.toStringAsFixed(1) ?? '—'}%',
+                          style: const TextStyle(color: GlyCadenceTheme.berry, fontWeight: FontWeight.w600)),
+                      Text('In target: ${summary!.tirPct?.toStringAsFixed(1) ?? '—'}%',
+                          style: const TextStyle(color: GlyCadenceTheme.saffron, fontWeight: FontWeight.w700)),
+                      Text('Above 180: ${summary!.tarPct?.toStringAsFixed(1) ?? '—'}%',
+                          style: const TextStyle(color: GlyCadenceTheme.terracotta, fontWeight: FontWeight.w600)),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _MealsTab extends StatefulWidget {
+  final List<RecipeItem> recipes;
+  final ValueChanged<String> onOpenRecipe;
+
+  const _MealsTab({required this.recipes, required this.onOpenRecipe});
+
+  @override
+  State<_MealsTab> createState() => _MealsTabState();
+}
+
+class _MealsTabState extends State<_MealsTab> {
+  String _slot = 'all';
+
+  @override
+  Widget build(BuildContext context) {
+    final filtered = _slot == 'all'
+        ? widget.recipes
+        : widget.recipes.where((r) => r.slot == _slot).toList();
+
+    return Column(
+      children: [
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.all(12),
+          child: Row(
+            children: ['all', 'breakfast', 'lunch', 'dinner', 'snack', 'suhoor', 'iftar']
+                .map(
+                  (s) => Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(s.toUpperCase()),
+                      selected: _slot == s,
+                      onSelected: (_) => setState(() => _slot = s),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            itemCount: filtered.length,
+            itemBuilder: (_, i) {
+              final r = filtered[i];
+              return Card(
+                margin: const EdgeInsets.only(bottom: 10),
+                child: ListTile(
+                  leading: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.network(
+                      r.imageUrl,
+                      width: 56,
+                      height: 56,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => const Icon(Icons.restaurant_menu),
+                    ),
+                  ),
+                  title: Text(r.name),
+                  subtitle: Text(
+                      '${r.nutrition.carbsG}g carbs · ${r.nutrition.sugarG}g sugar · ${r.nutrition.glBand} GL'),
+                  trailing: const Icon(Icons.chevron_right),
+                  onTap: () => widget.onOpenRecipe(r.id),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class MealDetailScreen extends StatefulWidget {
+  final ApiClient apiClient;
+  final String patientId;
+  final String recipeId;
+
+  const MealDetailScreen({
+    super.key,
+    required this.apiClient,
+    required this.patientId,
+    required this.recipeId,
+  });
+
+  @override
+  State<MealDetailScreen> createState() => _MealDetailScreenState();
+}
+
+class _MealDetailScreenState extends State<MealDetailScreen> {
+  MealDetailData? _detail;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.apiClient.getRecipeDetail(widget.recipeId, widget.patientId).then((d) {
+      if (mounted) setState(() => _detail = d);
+    }).catchError((e) {
+      if (mounted) setState(() => _error = e.toString());
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(_detail?.recipe.name ?? 'Meal Details')),
+      body: _error != null
+          ? Center(child: Text(_error!))
+          : _detail == null
+              ? const Center(child: CircularProgressIndicator())
+              : ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(20),
+                      child: Image.network(
+                        _detail!.recipe.imageUrl,
+                        height: 200,
+                        width: double.infinity,
+                        fit: BoxFit.cover,
+                        errorBuilder: (_, _, _) => const SizedBox(height: 120),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Text(_detail!.recipe.name,
+                        style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 4),
+                    Text('Best time: ${_detail!.recommendedTimeWindow} — ${_detail!.bestTimeReason}'),
+                    const SizedBox(height: 12),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Nutrition per portion',
+                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 10,
+                              runSpacing: 8,
+                              children: [
+                                Chip(label: Text('Carbs: ${_detail!.recipe.nutrition.carbsG}g')),
+                                Chip(label: Text('Sugar: ${_detail!.recipe.nutrition.sugarG}g')),
+                                Chip(label: Text('Fibre: ${_detail!.recipe.nutrition.fibreG}g')),
+                                Chip(label: Text('Protein: ${_detail!.recipe.nutrition.proteinG}g')),
+                                Chip(label: Text('${_detail!.recipe.nutrition.glBand} GL')),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('How this meal has gone for you',
+                                style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 6),
+                            Text(_detail!.personalSummary),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Card(
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text('Recipe Steps', style: TextStyle(fontWeight: FontWeight.bold)),
+                            const SizedBox(height: 6),
+                            ..._detail!.recipe.steps.asMap().entries.map(
+                                  (e) => Padding(
+                                    padding: const EdgeInsets.only(bottom: 4),
+                                    child: Text('${e.key + 1}. ${e.value}'),
+                                  ),
+                                ),
+                          ],
+                        ),
                       ),
                     ),
                   ],
                 ),
+    );
+  }
+}
+
+class _MoreTab extends StatelessWidget {
+  final ApiClient apiClient;
+  final List<PatientSummary> patients;
+  final PatientSummary? selectedPatient;
+  final ValueChanged<PatientSummary> onSelectPatient;
+  final VoidCallback onLogout;
+
+  const _MoreTab({
+    required this.apiClient,
+    required this.patients,
+    required this.selectedPatient,
+    required this.onSelectPatient,
+    required this.onLogout,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final pid = selectedPatient?.id;
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        if (patients.isNotEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  isExpanded: true,
+                  value: selectedPatient?.id,
+                  items: patients
+                      .map((p) => DropdownMenuItem(value: p.id, child: Text(p.displayName)))
+                      .toList(),
+                  onChanged: (id) {
+                    if (id == null) return;
+                    onSelectPatient(patients.firstWhere((p) => p.id == id));
+                  },
+                ),
               ),
             ),
-          ],
-          if (history.length > 1) ...[
-            const SizedBox(height: 12),
-            const Text('Recent Runs', style: TextStyle(fontWeight: FontWeight.bold)),
-            ...history.take(5).map(
-                  (r) => ListTile(
-                    title: Text('${r.executionMode} · ${r.modelUsed}'),
-                    subtitle: Text(r.safetyPassed ? 'PASSED' : 'REJECTED'),
-                    onTap: () => onSelectRun(r),
+          ),
+        const SizedBox(height: 10),
+        ListTile(
+          leading: const Icon(Icons.medication_outlined, color: GlyCadenceTheme.coral),
+          title: const Text('Medicines (Dose Diary)'),
+          onTap: pid == null
+              ? null
+              : () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => _GenericCareScreen(
+                              title: 'Medicines',
+                              loader: () => apiClient.getMedicinesSummary(pid),
+                            )),
                   ),
-                ),
-          ],
-        ],
+        ),
+        ListTile(
+          leading: const Icon(Icons.favorite_border, color: GlyCadenceTheme.coral),
+          title: const Text('Wellbeing (Kindred)'),
+          onTap: pid == null
+              ? null
+              : () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => _GenericCareScreen(
+                              title: 'Wellbeing',
+                              loader: () => apiClient.getWellbeingSummary(pid),
+                            )),
+                  ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.nights_stay_outlined, color: GlyCadenceTheme.saffron),
+          title: const Text('Ramadan & Fasting (Roza Guide)'),
+          onTap: pid == null
+              ? null
+              : () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => _GenericCareScreen(
+                              title: 'Roza Guide',
+                              loader: () => apiClient.getRamadanPlan(pid),
+                            )),
+                  ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.assignment_outlined, color: GlyCadenceTheme.coral),
+          title: const Text('Doctor Visit Questions'),
+          onTap: pid == null
+              ? null
+              : () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                        builder: (_) => _GenericCareScreen(
+                              title: 'Doctor Visit',
+                              loader: () => apiClient.getVisitReport(pid),
+                            )),
+                  ),
+        ),
+        ListTile(
+          leading: const Icon(Icons.settings_outlined),
+          title: const Text('API Settings & Sign Out'),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => SettingsScreen(apiClient: apiClient, onLogout: onLogout),
+            ),
+          ),
+        ),
       ],
+    );
+  }
+}
+
+class _GenericCareScreen extends StatelessWidget {
+  final String title;
+  final Future<Map<String, dynamic>> Function() loader;
+
+  const _GenericCareScreen({required this.title, required this.loader});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(title)),
+      body: FutureBuilder<Map<String, dynamic>>(
+        future: loader(),
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snap.hasError) return Center(child: Text('${snap.error}'));
+          final data = snap.data ?? {};
+          final lines = <String>[];
+          if (data['personal_summary'] is List) {
+            lines.addAll((data['personal_summary'] as List).map((e) => e.toString()));
+          }
+          if (data['questions'] is List) {
+            for (final q in data['questions'] as List) {
+              if (q is Map) lines.add('• ${q['question']} (Why: ${q['why']})');
+            }
+          }
+          if (data['medications'] is List) {
+            for (final m in data['medications'] as List) {
+              if (m is Map) lines.add('${m['name']} ${m['dose'] ?? ''} — ${m['plain_explanation']}');
+            }
+          }
+          if (data['roza'] is Map) {
+            final findings = (data['roza'] as Map)['findings'] as List? ?? [];
+            for (final f in findings) {
+              if (f is Map) lines.add(f['rendered_text']?.toString() ?? '');
+            }
+          }
+          if (data['agent_summary'] is Map) {
+            final findings = (data['agent_summary'] as Map)['findings'] as List? ?? [];
+            for (final f in findings) {
+              if (f is Map) lines.add(f['rendered_text']?.toString() ?? '');
+            }
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: lines.length,
+            itemBuilder: (_, i) => Card(
+              margin: const EdgeInsets.only(bottom: 10),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Text(lines[i]),
+              ),
+            ),
+          );
+        },
+      ),
     );
   }
 }
 
 class SettingsScreen extends StatefulWidget {
   final ApiClient apiClient;
-  final bool embedded;
   final VoidCallback? onLogout;
 
-  const SettingsScreen({
-    super.key,
-    required this.apiClient,
-    this.embedded = false,
-    this.onLogout,
-  });
+  const SettingsScreen({super.key, required this.apiClient, this.onLogout});
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -898,57 +1321,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final body = ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        Card(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  'Backend API Base URL',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                const SizedBox(height: 8),
-                TextField(
-                  controller: _urlController,
-                  decoration: InputDecoration(
-                    hintText: ApiClient.defaultBaseUrl,
-                    border: const OutlineInputBorder(),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                FilledButton(
-                  onPressed: _save,
-                  style: FilledButton.styleFrom(backgroundColor: GlyCadenceTheme.slateTeal),
-                  child: const Text('Save API URL'),
-                ),
-                if (_savedMessage != null) ...[
-                  const SizedBox(height: 8),
-                  Text(_savedMessage!, style: const TextStyle(color: Colors.teal)),
-                ],
-              ],
-            ),
-          ),
-        ),
-        if (widget.onLogout != null) ...[
-          const SizedBox(height: 16),
-          OutlinedButton.icon(
-            onPressed: widget.onLogout,
-            icon: const Icon(Icons.logout),
-            label: const Text('Sign Out'),
-          ),
-        ],
-      ],
-    );
-
-    if (widget.embedded) return body;
     return Scaffold(
       appBar: AppBar(title: const Text('API Settings')),
-      body: body,
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('Backend API Base URL',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 8),
+                  TextField(
+                    controller: _urlController,
+                    decoration: InputDecoration(
+                      hintText: ApiClient.defaultBaseUrl,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: _save,
+                    style: FilledButton.styleFrom(backgroundColor: GlyCadenceTheme.coral),
+                    child: const Text('Save API URL', style: TextStyle(color: Colors.white)),
+                  ),
+                  if (_savedMessage != null) ...[
+                    const SizedBox(height: 8),
+                    Text(_savedMessage!, style: const TextStyle(color: Colors.teal)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          if (widget.onLogout != null) ...[
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              onPressed: () {
+                widget.onLogout!();
+                Navigator.of(context).pop();
+              },
+              icon: const Icon(Icons.logout),
+              label: const Text('Sign Out'),
+            ),
+          ],
+        ],
+      ),
     );
   }
 }
