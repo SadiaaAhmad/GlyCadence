@@ -28,9 +28,15 @@ from app.agents.llm import _is_gemini_key_usable
 from app.core.config import get_settings
 from app.core.database import get_engine
 from app.models import GlucoseReading, Meal, Medication, MedicationEvent, Patient, WellbeingRecord
+from app.services.synthetic_seed import ensure_v2_demo_environment
 
 
 def _ensure_synth_demo(db: Session) -> Patient:
+    p1, _ = ensure_v2_demo_environment(db)
+    return p1
+
+
+def _legacy_ensure_synth_demo(db: Session) -> Patient:
     existing = db.scalar(
         select(Patient).where(
             Patient.cohort_type == "synthetic_demo",
