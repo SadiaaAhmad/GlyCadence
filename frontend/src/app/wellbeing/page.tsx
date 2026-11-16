@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, HeartHandshake, ShieldAlert } from "lucide-react";
+import { HeartHandshake, MessageCircleHeart, Send, ShieldAlert } from "lucide-react";
+import { BackToMoreButton } from "@/components/ui/BackToMoreButton";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient } from "@/services/api";
 import type { WellbeingSummaryResponse } from "@/types/glycadence";
@@ -22,6 +22,10 @@ export default function WellbeingPage() {
   const [ddsQ1, setDdsQ1] = useState(2);
   const [ddsQ2, setDdsQ2] = useState(2);
   const [ddsResult, setDdsResult] = useState<{ average_score: number; elevated_distress: boolean; message: string } | null>(null);
+
+  const [chatMsg, setChatMsg] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatHistory, setChatHistory] = useState<{ role: "user" | "kindred"; text: string; flagged?: boolean }[]>([]);
 
   const load = useCallback(async () => {
     if (!activePatientId) return;
@@ -58,17 +62,76 @@ export default function WellbeingPage() {
     setDdsResult(res);
   }
 
+  async function sendToKindred(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activePatientId || !chatMsg.trim()) return;
+    const text = chatMsg.trim();
+    setChatMsg("");
+    setChatHistory((prev) => [...prev, { role: "user", text }]);
+    setChatBusy(true);
+    try {
+      const res = await apiClient.talkToKindred(activePatientId, text);
+      setChatHistory((prev) => [...prev, { role: "kindred", text: res.reply, flagged: res.flagged_for_doctor }]);
+      await load();
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <Link href="/more" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#FF4D4D]">
-        <ArrowLeft className="h-4 w-4" /> Back to Care Tools
-      </Link>
+      <BackToMoreButton />
       <div>
         <h1 className="font-display text-2xl sm:text-3xl font-semibold">Wellbeing (Kindred)</h1>
         <p className="text-sm text-[var(--text-muted)]">
-          20-second mood, stress, sleep, and sick-day check-ins. Observed patterns only — never judgmental.
+          20-second mood, stress, sleep, and sick-day check-ins plus live Kindred support — saved for your doctor visit.
         </p>
       </div>
+
+      {/* Live Talk to Kindred Chat */}
+      <section className="gc-card p-5 space-y-3 border-[#FF4D4D]/35">
+        <div className="flex items-center gap-2 font-display text-base font-semibold">
+          <MessageCircleHeart className="h-5 w-5 text-[#FF4D4D]" />
+          Talk to Kindred (Mental &amp; Physical Wellbeing Companion)
+        </div>
+        <p className="text-xs text-[var(--text-muted)]">
+          Share how you&apos;re feeling physically or emotionally (e.g., diabetes burnout, stress, foot tingling, blurry vision, poor sleep). Kindred saves notes to your personal history and Doctor Visit Report.
+        </p>
+        {chatHistory.length > 0 && (
+          <div className="space-y-2.5 max-h-72 overflow-y-auto rounded-xl bg-[var(--bg-page)] border border-[var(--border-clay)] p-3.5">
+            {chatHistory.map((m, idx) => (
+              <div
+                key={idx}
+                className={`rounded-xl px-3.5 py-2.5 text-sm ${
+                  m.role === "user" ? "ml-auto max-w-[85%] bg-[#FF4D4D] text-white" : "mr-auto max-w-[90%] bg-white border border-[var(--border-clay)]"
+                }`}
+              >
+                <p className="whitespace-pre-line">{m.text}</p>
+                {m.flagged && (
+                  <p className="mt-1.5 text-[11px] font-semibold text-[#C8553D]">
+                    • Noted &amp; flagged for your Doctor Visit Report
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        <form onSubmit={(e) => void sendToKindred(e)} className="flex gap-2">
+          <input
+            value={chatMsg}
+            onChange={(e) => setChatMsg(e.target.value)}
+            placeholder="Tell Kindred how you're feeling today..."
+            className="flex-1 rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3.5 py-2 text-sm"
+          />
+          <button
+            type="submit"
+            disabled={chatBusy || !chatMsg.trim()}
+            className="inline-flex items-center gap-1.5 rounded-xl bg-[#FF4D4D] px-4 py-2 text-xs font-semibold text-white hover:bg-[#e84141] disabled:opacity-50"
+          >
+            <Send className="h-3.5 w-3.5" /> {chatBusy ? "Listening…" : "Share"}
+          </button>
+        </form>
+      </section>
 
       {/* Co-occurrence Findings */}
       {(data?.agent_summary?.findings ?? []).length > 0 && (

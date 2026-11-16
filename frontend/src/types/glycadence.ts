@@ -259,6 +259,13 @@ export interface MedicinesSummaryResponse {
     findings: { id: string; kind: string; rendered_text: string }[];
   };
   glucose_context?: string[];
+  agent_recommendations?: {
+    title: string;
+    option_class: string;
+    why: string;
+    disclaimer: string;
+  }[];
+  safety_disclaimer?: string;
 }
 
 export interface WellbeingSummaryResponse {
@@ -287,6 +294,19 @@ export interface VisitReportResponse {
   metrics: HeroGlucoseCard;
   medications: string[];
   questions: { question: string; why: string }[];
+  wellbeing_notes?: {
+    recorded_at: string;
+    stress_level: number | null;
+    fatigue_level: number | null;
+    sleep_hours: number | null;
+    notes: string | null;
+  }[];
+  exercise_summary?: {
+    weekly_minutes: number;
+    target_minutes: number;
+    resistance_sessions: number;
+    resistance_target: number;
+  };
   clinician_appendix: Record<string, unknown>;
 }
 

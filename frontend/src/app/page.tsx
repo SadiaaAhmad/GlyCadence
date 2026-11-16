@@ -55,6 +55,28 @@ export default function TodayPage() {
   const [quickQuestion, setQuickQuestion] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const [pulseSlot, setPulseSlot] = useState<"morning" | "midday" | "night">(() => {
+    const h = new Date().getHours();
+    if (h < 12) return "morning";
+    if (h < 18) return "midday";
+    return "night";
+  });
+  const [pulseSugar, setPulseSugar] = useState("");
+  const [pulseMeds, setPulseMeds] = useState<"taken" | "delayed" | "missed" | "none">("taken");
+  const [pulseNote, setPulseNote] = useState("");
+  const [pulseBusy, setPulseBusy] = useState(false);
+  const [pulseMsg, setPulseMsg] = useState<string | null>(null);
+  const [savedSlots, setSavedSlots] = useState<Record<string, number>>({});
+
+  async function refreshOverview(pid: string) {
+    const [ov, rd] = await Promise.all([
+      apiClient.getTodayOverview(pid),
+      apiClient.getGlucoseReadings(pid, 1),
+    ]);
+    setOverview(ov);
+    setReadings(rd);
+  }
+
   useEffect(() => {
     if (!activePatientId) return;
     let cancelled = false;
@@ -96,6 +118,30 @@ export default function TodayPage() {
     router.push(`/ask?q=${encodeURIComponent(q)}`);
   }
 
+  async function handlePulseSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activePatientId || !pulseSugar) return;
+    const val = Number(pulseSugar);
+    if (Number.isNaN(val) || val < 25 || val > 600) return;
+    setPulseBusy(true);
+    setPulseMsg(null);
+    try {
+      const res = await apiClient.submitDailyPulse(activePatientId, {
+        slot: pulseSlot,
+        glucose_mg_dl: val,
+        meds_taken_status: pulseMeds,
+        feeling_note: pulseNote.trim() || undefined,
+      });
+      setSavedSlots((prev) => ({ ...prev, [pulseSlot]: val }));
+      setPulseMsg(res.message);
+      setPulseSugar("");
+      setPulseNote("");
+      await refreshOverview(activePatientId);
+    } finally {
+      setPulseBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Greeting Header */}
@@ -106,6 +152,85 @@ export default function TodayPage() {
         <p className="text-base text-[var(--text-muted)]">
           {overview?.greeting_line || (loading ? "Loading your day..." : "Your sensor, meal, and medicine patterns are ready.")}
         </p>
+      </section>
+
+      {/* Compulsory Daily Pulse Check-in */}
+      <section className="gc-card p-5 space-y-4 border-[#FF4D4D]/35">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <h2 className="font-display text-base font-semibold">
+              Daily Compulsory Check-In (Morning · Mid-Day · Night)
+            </h2>
+            <p className="text-xs text-[var(--text-muted)]">
+              Log your 3 daily readings, medicine timing, and how you feel so Cadie learns your personal patterns.
+            </p>
+          </div>
+          <div className="flex gap-1.5">
+            {(["morning", "midday", "night"] as const).map((slot) => {
+              const doneVal = savedSlots[slot];
+              const active = pulseSlot === slot;
+              return (
+                <button
+                  key={slot}
+                  type="button"
+                  onClick={() => setPulseSlot(slot)}
+                  className={`rounded-full px-3 py-1 text-xs font-semibold capitalize transition ${
+                    active
+                      ? "bg-[#FF4D4D] text-white"
+                      : doneVal
+                        ? "bg-[#239B62]/15 text-[#1D8353] border border-[#239B62]/40"
+                        : "bg-[var(--bg-muted)] text-[var(--text-muted)]"
+                  }`}
+                >
+                  {slot === "midday" ? "Mid-Day" : slot} {doneVal ? `(${doneVal})` : ""}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <form onSubmit={(e) => void handlePulseSubmit(e)} className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <input
+            type="number"
+            required
+            min={25}
+            max={600}
+            value={pulseSugar}
+            onChange={(e) => setPulseSugar(e.target.value)}
+            placeholder={`${pulseSlot === "midday" ? "Mid-day" : pulseSlot} sugar (mg/dL)`}
+            className="rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2 text-sm font-semibold"
+          />
+          <select
+            value={pulseMeds}
+            onChange={(e) => setPulseMeds(e.target.value as "taken" | "delayed" | "missed" | "none")}
+            className="rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2 text-sm"
+          >
+            <option value="taken">Meds taken on time</option>
+            <option value="delayed">Meds delayed</option>
+            <option value="missed">Meds missed</option>
+            <option value="none">No meds for this slot</option>
+          </select>
+          <input
+            type="text"
+            value={pulseNote}
+            onChange={(e) => setPulseNote(e.target.value)}
+            placeholder="How did you feel today / after eating?"
+            className="rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2 text-sm"
+          />
+          <button
+            type="submit"
+            disabled={pulseBusy || !pulseSugar}
+            className="rounded-xl bg-[#FF4D4D] px-4 py-2 text-sm font-semibold text-white hover:bg-[#e84141] disabled:opacity-50"
+          >
+            {pulseBusy ? "Saving…" : "Save Check-In"}
+          </button>
+        </form>
+
+        {pulseMsg && (
+          <div className="rounded-xl bg-[#239B62]/15 border border-[#239B62]/30 px-3.5 py-2 text-xs font-semibold text-[#1D8353]">
+            {pulseMsg}
+          </div>
+        )}
       </section>
 
       {/* Primary Card 1: Glucose Hero Card */}

@@ -1,10 +1,10 @@
 from datetime import timedelta
 from statistics import mean
-from typing import Annotated
+from typing import Annotated, Literal
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -444,3 +444,156 @@ def get_patient_meal_detail(
             else "52% general match (log this meal once to personalize)"
         ),
     )
+
+
+class LogMealRequest(BaseModel):
+    description: str = Field(min_length=2, max_length=255)
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack"] = "lunch"
+    recipe_id: str | None = None
+    carbs_g: float | None = Field(default=None, ge=0.0, le=300.0)
+    glucose_mg_dl: float | None = Field(default=None, ge=25.0, le=600.0)
+
+
+class CustomIngredientsRequest(BaseModel):
+    ingredients_text: str = Field(min_length=2, max_length=400)
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack"] = "lunch"
+
+
+@router.post("/patients/{patient_id}/meals/log")
+def log_patient_meal(
+    patient_id: uuid.UUID,
+    payload: LogMealRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    from datetime import datetime, timezone
+    from app.models import User
+
+    patient = require_patient_access(patient_id, current_user, db, write=False)
+    now_utc = datetime.now(timezone.utc)
+    m = Meal(
+        id=uuid.uuid4(),
+        patient_id=patient.id,
+        cohort_type=patient.cohort_type,
+        logged_at=now_utc,
+        meal_type=payload.meal_type,
+        description=payload.description.strip(),
+        ingredients=[],
+        carbs_g=payload.carbs_g,
+        cultural_tag="Pakistani",
+        source_dataset="app_user",
+    )
+    db.add(m)
+    db.flush()
+    if payload.recipe_id:
+        try:
+            rid = uuid.UUID(payload.recipe_id)
+            db.add(MealFoodLink(id=uuid.uuid4(), meal_id=m.id, recipe_id=rid))
+        except ValueError:
+            pass
+    if payload.glucose_mg_dl is not None:
+        db.add(
+            GlucoseReading(
+                id=uuid.uuid4(),
+                patient_id=patient.id,
+                cohort_type=patient.cohort_type,
+                recorded_at=now_utc,
+                raw_timestamp=now_utc.isoformat(),
+                timestamp_semantics="utc_exact",
+                timezone_basis="source_confirmed",
+                glucose_mg_dl=payload.glucose_mg_dl,
+                raw_value=payload.glucose_mg_dl,
+                raw_unit="mg/dL",
+                reading_type="post_meal",
+                observation_provenance="native",
+                source_dataset="app_user",
+            )
+        )
+    db.commit()
+    return {"status": "logged", "meal_id": str(m.id)}
+
+
+@router.post("/patients/{patient_id}/meals/from-ingredients")
+def create_recipe_from_ingredients(
+    patient_id: uuid.UUID,
+    payload: CustomIngredientsRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    """Match patient's available kitchen ingredients against FoodItems, compute exact nutrition, and draft a sugar-friendly recipe."""
+    from app.agents.llm import _is_gemini_key_usable, synthesize_plain_text
+    from app.core.config import get_settings
+
+    patient = require_patient_access(patient_id, current_user, db, write=False)
+    ensure_food_and_recipe_catalog(db)
+    all_foods = list(db.scalars(select(FoodItem)).all())
+    tokens = [t.strip().lower() for t in payload.ingredients_text.replace(";", ",").split(",") if t.strip()]
+
+    matched: list[tuple[float, FoodItem]] = []
+    for tok in tokens:
+        for f in all_foods:
+            if tok in f.name.lower() or tok in f.slug.replace("_", " "):
+                # Sensible standard home portion in grams
+                grams = 120.0 if any(w in f.slug for w in ("daal", "chana", "chicken", "fish", "keema", "okra", "spinach", "yogurt")) else (40.0 if "flour" in f.slug or "oats" in f.slug else 60.0)
+                if not any(m_f.id == f.id for _, m_f in matched):
+                    matched.append((grams, f))
+                break
+
+    if not matched:
+        # Fallback to balanced staples if user typed unfamiliar spelling
+        matched = [(100.0, f) for f in all_foods[:3]]
+
+    nut = compute_recipe_nutrition(matched)
+    latest_g = db.scalar(
+        select(GlucoseReading)
+        .where(GlucoseReading.patient_id == patient.id)
+        .order_by(GlucoseReading.recorded_at.desc())
+        .limit(1)
+    )
+    latest_val = latest_g.glucose_mg_dl if latest_g else None
+
+    if nut.gl_band == "Low" and nut.sugar_g <= 6.0:
+        verdict = "Suitable — gentle sugar & glycaemic load for your current readings."
+    elif nut.gl_band == "Medium":
+        verdict = "Suitable in a measured portion; pair with extra cucumber/salad or a 15-min walk."
+    else:
+        verdict = "Higher carb/sugar load — consider a smaller portion or swapping half the grain for daal/vegetables."
+
+    if latest_val is not None and latest_val > 180:
+        verdict += f" (Note: your latest reading is {round(latest_val)} mg/dL, so keep starch portion modest.)"
+
+    ing_list = [{"name": f.name, "grams": g} for g, f in matched]
+    steps = [
+        f"Combine {', '.join(f.name.split('(')[0].strip() for _, f in matched)} using minimal oil (1 tsp) and fresh spices (cumin, turmeric, coriander).",
+        "Cook until tender and plate half your dish with non-starchy salad or greens if available.",
+    ]
+
+    settings = get_settings()
+    if _is_gemini_key_usable(settings.gemini_api_key):
+        prompt = (
+            f"Create 3 short home-style Pakistani cooking steps for a {payload.meal_type} using ONLY: "
+            + ", ".join(f"{g:.0f}g {f.name}" for g, f in matched)
+            + ". Keep it diabetes-friendly (no added sugar, minimal oil). Return 3 numbered sentences only."
+        )
+        ok, g_steps, _ = synthesize_plain_text(prompt, api_key=settings.gemini_api_key or "", model=settings.gemini_model)
+        if ok and g_steps:
+            parsed_steps = [s.strip() for s in g_steps.splitlines() if s.strip()]
+            if parsed_steps:
+                steps = parsed_steps[:4]
+
+    return {
+        "recipe_title": f"Custom {payload.meal_type.title()} from Your Kitchen",
+        "matched_ingredients": ing_list,
+        "nutrition": {
+            "carbs_g": nut.carbs_g,
+            "sugar_g": nut.sugar_g,
+            "fibre_g": nut.fibre_g,
+            "protein_g": nut.protein_g,
+            "fat_g": nut.fat_g,
+            "kcal": nut.kcal,
+            "estimated_gl": nut.estimated_gl,
+            "gl_band": nut.gl_band,
+        },
+        "suitability_verdict": verdict,
+        "steps": steps,
+    }

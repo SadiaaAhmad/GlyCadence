@@ -196,4 +196,86 @@ export const apiClient = {
     }),
   getInvestigation: (pid: string, runId: string) =>
     fetchJson<InvestigationRun>(`/api/v1/patients/${pid}/investigations/${runId}`),
+
+  submitDailyPulse: (
+    pid: string,
+    body: {
+      slot: "morning" | "midday" | "night";
+      glucose_mg_dl: number;
+      meds_taken_status: "taken" | "delayed" | "missed" | "none";
+      feeling_note?: string;
+    }
+  ) =>
+    fetchJson<{ ok: boolean; slot: string; glucose_mg_dl: number; meds_taken_status: string; message: string }>(
+      `/api/v1/patients/${pid}/daily-pulse`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+
+  addMedicine: (
+    pid: string,
+    body: {
+      medication_name: string;
+      drug_class: string;
+      recorded_dose: string;
+      prescribed_schedule: string;
+      units_on_hand: number;
+    }
+  ) =>
+    fetchJson<{ ok: boolean; medication_id: string; name: string }>(
+      `/api/v1/patients/${pid}/medicines/add`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+
+  talkToKindred: (pid: string, message: string, mode: "auto" | "gemini" | "deterministic_fallback" = "auto") =>
+    fetchJson<{ reply: string; execution_mode: string; saved_to_memory: boolean; flagged_for_doctor: boolean }>(
+      `/api/v1/patients/${pid}/wellbeing/chat`,
+      { method: "POST", body: JSON.stringify({ message, mode }) }
+    ),
+
+  logMeal: (
+    pid: string,
+    body: {
+      description: string;
+      meal_type: "breakfast" | "lunch" | "dinner" | "snack";
+      recipe_id?: string;
+      carbs_g?: number;
+      glucose_mg_dl?: number;
+    }
+  ) =>
+    fetchJson<{ ok: boolean; meal_id: string; description: string }>(
+      `/api/v1/patients/${pid}/meals/log`,
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+
+  makeRecipeFromIngredients: (
+    pid: string,
+    body: {
+      ingredients_text: string;
+      meal_type: "breakfast" | "lunch" | "dinner" | "snack";
+    }
+  ) =>
+    fetchJson<{
+      recipe_title: string;
+      matched_ingredients: string[];
+      nutrition: {
+        carbs_g: number;
+        sugar_g: number;
+        fibre_g: number;
+        protein_g: number;
+        fat_g: number;
+        calories_kcal: number;
+        estimated_gl: number;
+      };
+      suitability_verdict: string;
+      steps: string[];
+    }>(`/api/v1/patients/${pid}/meals/from-ingredients`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  updatePatientName: (pid: string, display_name: string) =>
+    fetchJson<PatientSummary>(`/api/v1/patients/${pid}`, {
+      method: "PATCH",
+      body: JSON.stringify({ display_name }),
+    }),
 };

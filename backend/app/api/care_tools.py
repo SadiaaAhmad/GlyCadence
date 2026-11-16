@@ -191,6 +191,57 @@ def get_medicines_summary(
                 "days_left": days_left,
             }
         )
+
+    vals = [float(r.glucose_mg_dl) for r in readings_all]
+    avg_g = round(sum(vals) / len(vals), 1) if vals else None
+    highs = sum(1 for v in vals if v >= 180)
+    lows = sum(1 for v in vals if v < 70)
+    has_metformin = any("metformin" in m.medication_name.lower() or (m.drug_class or "").lower() == "biguanide" for m in meds)
+    has_hypo_med = any(item["hypo_risk"] for item in med_items)
+    safety_disclaimer = "Discuss with and get a prescription from your doctor before starting or changing any medicine."
+    agent_recommendations: list[dict] = []
+    if not meds:
+        agent_recommendations.append(
+            {
+                "title": "Ask your doctor about first-line glucose support",
+                "option_class": "Biguanide (e.g., Metformin) or lifestyle-first plan",
+                "why": (
+                    f"Your recent average reading is {avg_g} mg/dL across {len(vals)} readings with {highs} readings at or above 180 mg/dL."
+                    if avg_g is not None
+                    else "Log your morning, mid-day, and night readings in Daily Pulse so Dose Diary can tailor clinician discussion points."
+                ),
+                "disclaimer": safety_disclaimer,
+            }
+        )
+    else:
+        if highs > 0 or (avg_g is not None and avg_g >= 154):
+            agent_recommendations.append(
+                {
+                    "title": "Review post-meal & fasting spikes with your clinician",
+                    "option_class": "Meal-time timing check or SGLT2i / GLP-1 RA discussion" if has_metformin else "Metformin or meal-timed therapy review",
+                    "why": f"Observed {highs} readings >= 180 mg/dL (average {avg_g} mg/dL). Pairing carb-moderate meals with consistent dose timing helps flatten spikes.",
+                    "disclaimer": safety_disclaimer,
+                }
+            )
+        if lows > 0 and has_hypo_med:
+            agent_recommendations.append(
+                {
+                    "title": "Check for low-sugar safety buffer",
+                    "option_class": "Sulfonylurea / Insulin dose timing review",
+                    "why": f"Detected {lows} low readings (< 70 mg/dL) while taking a low-sugar-capable medicine. Never skip meals after dosing.",
+                    "disclaimer": safety_disclaimer,
+                }
+            )
+        if not agent_recommendations:
+            agent_recommendations.append(
+                {
+                    "title": "Current regimen appears aligned with logged readings",
+                    "option_class": "Continue current prescribed plan",
+                    "why": f"Average reading is {avg_g} mg/dL with {lows} lows and {highs} highs.",
+                    "disclaimer": safety_disclaimer,
+                }
+            )
+
     return {
         "patient_id": str(patient.id),
         "medications": med_items,
@@ -206,6 +257,8 @@ def get_medicines_summary(
         ],
         "agent_summary": dose_res,
         "glucose_context": glucose_links,
+        "agent_recommendations": agent_recommendations,
+        "safety_disclaimer": safety_disclaimer,
     }
 
 
@@ -425,10 +478,22 @@ def get_visit_report(
     dose = run_dose_diary_agent(db, patient, meds, med_events)
     kin = run_kindred_agent(db, patient, readings, wellbeing)
     roza = run_roza_guide_agent(db, patient, readings, meds)
+    mover = run_mover_agent(db, patient, readings, meds)
     vn = run_visit_notes_agent(rhy, plt, dose, kin, roza)
 
     questions = next((c["questions"] for c in vn.get("cards", []) if c.get("type") == "visit_questions_card"), [])
     rhy_card = next((c for c in rhy.get("cards", []) if c.get("type") == "glucose_summary_card"), {})
+    mover_card = next((c for c in mover.get("cards", []) if c.get("type") == "exercise_plan_card"), {})
+    wellbeing_notes = [
+        {
+            "recorded_at": w.logged_at.isoformat(),
+            "stress_level": w.stress_score,
+            "fatigue_level": w.fatigue_score,
+            "sleep_hours": w.sleep_hours,
+            "notes": w.mood_notes,
+        }
+        for w in sorted(wellbeing, key=lambda x: x.logged_at, reverse=True)[:5]
+    ]
 
     payload = {
         "patient_id": str(patient.id),
@@ -437,6 +502,13 @@ def get_visit_report(
         "metrics": rhy_card,
         "medications": [f"{m.medication_name} {m.recorded_dose or ''} ({m.prescribed_schedule or ''})" for m in meds],
         "questions": questions,
+        "wellbeing_notes": wellbeing_notes,
+        "exercise_summary": {
+            "weekly_minutes": mover_card.get("weekly_minutes", 0),
+            "target_minutes": mover_card.get("target_minutes", 150),
+            "resistance_sessions": mover_card.get("resistance_sessions", 0),
+            "resistance_target": mover_card.get("resistance_target", 2),
+        },
         "clinician_appendix": {
             "cohort_type": patient.cohort_type,
             "source_dataset": patient.source_dataset,
@@ -507,3 +579,218 @@ def log_exercise_session(
     db.add(rec)
     db.commit()
     return {"status": "logged", "id": str(rec.id)}
+
+
+class DailyPulseRequest(BaseModel):
+    slot: Literal["morning", "midday", "night"]
+    glucose_mg_dl: float = Field(ge=25.0, le=600.0)
+    meds_taken_status: Literal["taken", "delayed", "missed", "none"] = "taken"
+    feeling_note: str | None = Field(default=None, max_length=500)
+
+
+class AddMedicineRequest(BaseModel):
+    medication_name: str = Field(min_length=2, max_length=120)
+    drug_class: str = Field(default="Other", max_length=64)
+    recorded_dose: str = Field(min_length=1, max_length=64)
+    prescribed_schedule: str = Field(min_length=2, max_length=120)
+    units_on_hand: float = Field(default=30.0, ge=0.0, le=500.0)
+
+
+class WellbeingChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1500)
+    mode: Literal["auto", "gemini", "deterministic_fallback"] = "auto"
+
+
+@router.post("/daily-pulse")
+def submit_daily_pulse(
+    patient_id: uuid.UUID,
+    payload: DailyPulseRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    """Compulsory daily Morning / Mid-day / Night pulse: saves glucose, med timing, and how the patient felt."""
+    from app.models import PatientMemory
+
+    patient = require_patient_access(patient_id, current_user, db, write=False)
+    now_utc = datetime.now(timezone.utc)
+
+    g = GlucoseReading(
+        id=uuid.uuid4(),
+        patient_id=patient.id,
+        cohort_type=patient.cohort_type,
+        recorded_at=now_utc,
+        raw_timestamp=now_utc.isoformat(),
+        timestamp_semantics="utc_exact",
+        timezone_basis="source_confirmed",
+        glucose_mg_dl=payload.glucose_mg_dl,
+        raw_value=payload.glucose_mg_dl,
+        raw_unit="mg/dL",
+        reading_type={"morning": "fasting", "midday": "pre_meal", "night": "bedtime"}[payload.slot],
+        observation_provenance="native",
+        source_dataset="app_user",
+        source_record_id=f"pulse_{payload.slot}_{now_utc.date().isoformat()}",
+    )
+    db.add(g)
+
+    if payload.meds_taken_status != "none":
+        active_meds = list(
+            db.scalars(select(Medication).where(Medication.patient_id == patient.id, Medication.is_active.is_(True))).all()
+        )
+        for m in active_meds[:1]:
+            db.add(
+                MedicationEvent(
+                    id=uuid.uuid4(),
+                    patient_id=patient.id,
+                    cohort_type=patient.cohort_type,
+                    medication_id=m.id,
+                    event_time=now_utc,
+                    status=payload.meds_taken_status,
+                    event_source="patient_log",
+                    notes=f"Daily {payload.slot} pulse",
+                    source_dataset="app_user",
+                )
+            )
+
+    if payload.feeling_note and payload.feeling_note.strip():
+        note_clean = payload.feeling_note.strip()
+        db.add(
+            WellbeingRecord(
+                id=uuid.uuid4(),
+                patient_id=patient.id,
+                cohort_type=patient.cohort_type,
+                logged_at=now_utc,
+                mood_notes=f"[{payload.slot}] {note_clean}",
+                source_dataset="app_user",
+            )
+        )
+        db.add(
+            PatientMemory(
+                id=uuid.uuid4(),
+                patient_id=patient.id,
+                cohort_type=patient.cohort_type,
+                fact_type="medical_context",
+                fact_text=f"Daily {payload.slot} note ({now_utc.date()}): {note_clean[:160]}",
+                confidence="high",
+            )
+        )
+
+    db.commit()
+    return {
+        "ok": True,
+        "status": "saved",
+        "glucose_id": str(g.id),
+        "slot": payload.slot,
+        "glucose_mg_dl": payload.glucose_mg_dl,
+        "meds_taken_status": payload.meds_taken_status,
+        "message": f"Saved {payload.slot} check-in ({payload.glucose_mg_dl} mg/dL).",
+    }
+
+
+@router.post("/medicines/add")
+def add_patient_medicine(
+    patient_id: uuid.UUID,
+    payload: AddMedicineRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    patient = require_patient_access(patient_id, current_user, db, write=False)
+    med = Medication(
+        id=uuid.uuid4(),
+        patient_id=patient.id,
+        cohort_type=patient.cohort_type,
+        medication_name=payload.medication_name.strip(),
+        drug_class=payload.drug_class,
+        recorded_dose=payload.recorded_dose.strip(),
+        prescribed_schedule=payload.prescribed_schedule.strip(),
+        is_active=True,
+        source_dataset="app_user",
+    )
+    db.add(med)
+    db.flush()
+    db.add(
+        MedicationStock(
+            id=uuid.uuid4(),
+            medication_id=med.id,
+            units_on_hand=payload.units_on_hand,
+            daily_units=1.0,
+        )
+    )
+    db.commit()
+    return {"status": "added", "id": str(med.id)}
+
+
+@router.post("/wellbeing/chat")
+def talk_to_kindred(
+    patient_id: uuid.UUID,
+    payload: WellbeingChatRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[Session, Depends(get_db)],
+) -> dict:
+    """Empathetic Kindred LLM companion for physical & mental diabetes wellbeing, saving insights to memory."""
+    from app.agents.llm import _is_gemini_key_usable, synthesize_plain_text
+    from app.core.config import get_settings
+    from app.models import PatientMemory
+
+    patient = require_patient_access(patient_id, current_user, db, write=False)
+    readings, _, _, _, wellbeing = _load_core(db, patient.id)
+    latest_g = readings[-1].glucose_mg_dl if readings else None
+    text = payload.message.strip()
+
+    # Save feeling into WellbeingRecord & PatientMemory so doctor report & CADIE remember it
+    now_utc = datetime.now(timezone.utc)
+    is_unwell = any(w in text.lower() for w in ("tingl", "numb", "blur", "dizzy", "sick", "pain", "exhaust", "vomit", "fever"))
+    db.add(
+        WellbeingRecord(
+            id=uuid.uuid4(),
+            patient_id=patient.id,
+            cohort_type=patient.cohort_type,
+            logged_at=now_utc,
+            illness_flag=is_unwell,
+            mood_notes=text[:400],
+            source_dataset="app_user",
+        )
+    )
+    db.add(
+        PatientMemory(
+            id=uuid.uuid4(),
+            patient_id=patient.id,
+            cohort_type=patient.cohort_type,
+            fact_type="medical_context" if is_unwell else "other",
+            fact_text=f"Wellbeing check-in ({now_utc.date()}): {text[:180]}",
+            confidence="high",
+        )
+    )
+    db.commit()
+
+    settings = get_settings()
+    reply = ""
+    mode = "deterministic_fallback"
+    if payload.mode != "deterministic_fallback" and _is_gemini_key_usable(settings.gemini_api_key):
+        prompt = (
+            "You are Kindred, a warm, empathetic diabetes mental & physical health guardian.\n"
+            f"Patient latest glucose: {round(latest_g) if latest_g else 'unknown'} mg/dL.\n"
+            f"Recent check-in count: {len(wellbeing)}.\n"
+            f"Patient says: {text}\n"
+            "Respond in 3-4 caring, practical sentences. Validate their feelings (diabetes burnout/distress is real), "
+            "give 1 gentle non-prescriptive comfort/safety step, and ask 1-2 short caring follow-up questions "
+            "(e.g., about sleep, foot tingling, blurry vision, or what felt hardest today) so we can note it for their doctor. "
+            "Never diagnose or change doses."
+        )
+        ok, g_txt, _ = synthesize_plain_text(prompt, api_key=settings.gemini_api_key or "", model=settings.gemini_model)
+        if ok and g_txt:
+            reply = g_txt
+            mode = "gemini"
+
+    if not reply:
+        reply = (
+            "Thank you for sharing how you're feeling — carrying diabetes every single day takes real energy, "
+            "and it's completely okay to feel worn down sometimes. I've saved this note in your personal history for your doctor visit. "
+            "To understand better: did this start after a specific meal or poor night's sleep, and have you noticed any foot tingling or blurry vision?"
+        )
+
+    return {
+        "reply": reply,
+        "execution_mode": mode,
+        "saved_to_memory": True,
+        "flagged_for_doctor": is_unwell,
+    }

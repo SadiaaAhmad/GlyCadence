@@ -1,8 +1,8 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, HelpCircle, Printer } from "lucide-react";
+import { HelpCircle, Printer } from "lucide-react";
+import { BackToMoreButton } from "@/components/ui/BackToMoreButton";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient, API_BASE_URL, getStoredToken } from "@/services/api";
 import type { VisitReportResponse } from "@/types/glycadence";
@@ -35,9 +35,7 @@ export default function VisitPage() {
 
   return (
     <div className="space-y-6">
-      <Link href="/more" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#FF4D4D]">
-        <ArrowLeft className="h-4 w-4" /> Back to Care Tools
-      </Link>
+      <BackToMoreButton />
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-semibold">Doctor Visit Report</h1>
@@ -68,6 +66,36 @@ export default function VisitPage() {
               ))}
             </ul>
           </section>
+
+          {report.exercise_summary && (
+            <section className="gc-card p-6 space-y-2">
+              <h2 className="font-display text-lg font-semibold">Weekly Activity Progress (Mover)</h2>
+              <p className="text-sm text-[var(--text-muted)]">
+                Aerobic minutes: <strong className="text-[#2B1E2F]">{report.exercise_summary.weekly_minutes}</strong> / {report.exercise_summary.target_minutes} min
+                {" · "}
+                Strength sessions: <strong className="text-[#2B1E2F]">{report.exercise_summary.resistance_sessions}</strong> / {report.exercise_summary.resistance_target}
+              </p>
+            </section>
+          )}
+
+          {(report.wellbeing_notes ?? []).length > 0 && (
+            <section className="gc-card p-6 space-y-3">
+              <h2 className="font-display text-lg font-semibold">Recent Wellbeing &amp; Symptom Notes (Kindred)</h2>
+              <div className="space-y-2 text-sm">
+                {report.wellbeing_notes?.map((w, idx) => (
+                  <div key={idx} className="rounded-xl bg-[var(--bg-page)] border border-[var(--border-clay)] px-3.5 py-2.5">
+                    <div className="text-xs text-[var(--text-muted)]">
+                      {new Date(w.recorded_at).toLocaleDateString()}
+                      {w.stress_level ? ` · Stress ${w.stress_level}/5` : ""}
+                      {w.fatigue_level ? ` · Fatigue ${w.fatigue_level}/5` : ""}
+                      {w.sleep_hours ? ` · Sleep ${w.sleep_hours}h` : ""}
+                    </div>
+                    {w.notes && <p className="mt-1 text-sm">{w.notes}</p>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           <section className="gc-card p-6 space-y-3">
             <h2 className="font-display text-lg font-semibold">Questions to Ask Your Doctor</h2>

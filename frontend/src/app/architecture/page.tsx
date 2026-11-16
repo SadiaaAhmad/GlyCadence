@@ -1,12 +1,14 @@
 import React from "react";
 import Link from "next/link";
 import { ArrowRight, Bot, Cpu, Database, Layers, ShieldCheck, Sparkles } from "lucide-react";
+import { BackToMoreButton } from "@/components/ui/BackToMoreButton";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
 export default function ArchitecturePage() {
   return (
     <div className="space-y-8">
+      <BackToMoreButton />
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <Badge variant="coral" className="mb-2">CS325 Multi-Agent Architecture</Badge>

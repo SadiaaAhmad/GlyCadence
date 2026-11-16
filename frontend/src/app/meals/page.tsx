@@ -1,15 +1,15 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { Clock, Search, Utensils } from "lucide-react";
+import { ChefHat, Clock, Plus, Search, Utensils } from "lucide-react";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient } from "@/services/api";
 import type { MealPlanResponse, MealResponseItem, RecipeOut } from "@/types/glycadence";
 
 export default function MealsPage() {
   const { activePatientId } = usePatientContext();
-  const [tab, setTab] = useState<"plan" | "log" | "ideas">("plan");
+  const [tab, setTab] = useState<"plan" | "log" | "ideas" | "chef">("plan");
   const [plan, setPlan] = useState<MealPlanResponse | null>(null);
   const [mealLog, setMealLog] = useState<MealResponseItem[]>([]);
   const [recipes, setRecipes] = useState<RecipeOut[]>([]);
@@ -17,16 +17,47 @@ export default function MealsPage() {
   const [vegOnly, setVegOnly] = useState(false);
   const [searchText, setSearchText] = useState("");
 
-  useEffect(() => {
+  // Log Meal form
+  const [logDesc, setLogDesc] = useState("");
+  const [logType, setLogType] = useState<"breakfast" | "lunch" | "dinner" | "snack">("lunch");
+  const [logCarbs, setLogCarbs] = useState("");
+  const [logSugar, setLogSugar] = useState("");
+  const [logBusy, setLogBusy] = useState(false);
+  const [logMsg, setLogMsg] = useState<string | null>(null);
+
+  // Kitchen Chef from ingredients
+  const [ingText, setIngText] = useState("");
+  const [ingType, setIngType] = useState<"breakfast" | "lunch" | "dinner" | "snack">("lunch");
+  const [chefBusy, setChefBusy] = useState(false);
+  const [chefResult, setChefResult] = useState<{
+    recipe_title: string;
+    matched_ingredients: string[];
+    nutrition: {
+      carbs_g: number;
+      sugar_g: number;
+      fibre_g: number;
+      protein_g: number;
+      fat_g: number;
+      calories_kcal: number;
+      estimated_gl: number;
+    };
+    suitability_verdict: string;
+    steps: string[];
+  } | null>(null);
+
+  const loadMeals = useCallback(async () => {
     if (!activePatientId) return;
-    Promise.all([
+    const [pl, ml] = await Promise.all([
       apiClient.getMealPlan(activePatientId),
       apiClient.getMealResponses(activePatientId),
-    ]).then(([pl, ml]) => {
-      setPlan(pl);
-      setMealLog(ml);
-    });
+    ]);
+    setPlan(pl);
+    setMealLog(ml);
   }, [activePatientId]);
+
+  useEffect(() => {
+    void loadMeals();
+  }, [loadMeals]);
 
   useEffect(() => {
     apiClient
@@ -38,26 +69,64 @@ export default function MealsPage() {
       .then(setRecipes);
   }, [slotFilter, vegOnly, searchText]);
 
+  async function handleLogMeal(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activePatientId || !logDesc.trim()) return;
+    setLogBusy(true);
+    setLogMsg(null);
+    try {
+      await apiClient.logMeal(activePatientId, {
+        description: logDesc.trim(),
+        meal_type: logType,
+        carbs_g: logCarbs ? Number(logCarbs) : undefined,
+        glucose_mg_dl: logSugar ? Number(logSugar) : undefined,
+      });
+      setLogDesc("");
+      setLogCarbs("");
+      setLogSugar("");
+      setLogMsg("Meal saved to your personal log.");
+      await loadMeals();
+    } finally {
+      setLogBusy(false);
+    }
+  }
+
+  async function handleChefGenerate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activePatientId || !ingText.trim()) return;
+    setChefBusy(true);
+    try {
+      const res = await apiClient.makeRecipeFromIngredients(activePatientId, {
+        ingredients_text: ingText.trim(),
+        meal_type: ingType,
+      });
+      setChefResult(res);
+    } finally {
+      setChefBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-semibold">Meals &amp; Timing</h1>
           <p className="text-sm text-[var(--text-muted)]">
-            Tap any meal or recipe to view ingredients, computed sugar &amp; fibre, and your personal glucose response.
+            Log meals, generate a sugar-friendly recipe from ingredients at home, or view your personal glucose responses.
           </p>
         </div>
 
-        <div className="flex gap-1.5 bg-[var(--bg-muted)] p-1 rounded-full">
+        <div className="flex flex-wrap gap-1.5 bg-[var(--bg-muted)] p-1 rounded-full">
           {[
             { id: "plan", label: "My Plan" },
-            { id: "log", label: "My Log" },
+            { id: "log", label: "Log & History" },
+            { id: "chef", label: "Kitchen Chef" },
             { id: "ideas", label: "30 Desi Ideas" },
           ].map((t) => (
             <button
               key={t.id}
               type="button"
-              onClick={() => setTab(t.id as "plan" | "log" | "ideas")}
+              onClick={() => setTab(t.id as "plan" | "log" | "ideas" | "chef")}
               className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
                 tab === t.id
                   ? "bg-[#2B1E2F] text-white dark:bg-[#F2A93B] dark:text-[#2B1E2F]"
@@ -110,7 +179,57 @@ export default function MealsPage() {
 
       {/* TAB 2: Patient's Logged Meals & Observed Responses */}
       {tab === "log" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-4">
+          <form onSubmit={(e) => void handleLogMeal(e)} className="gc-card p-5 space-y-3 border-[#FF4D4D]/30">
+            <div className="flex items-center gap-2 font-display text-base font-semibold">
+              <Plus className="h-4 w-4 text-[#FF4D4D]" /> Log a Meal
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <input
+                required
+                value={logDesc}
+                onChange={(e) => setLogDesc(e.target.value)}
+                placeholder="What did you eat? (e.g. Daal + 1 roti)"
+                className="sm:col-span-2 rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2 text-sm"
+              />
+              <select
+                value={logType}
+                onChange={(e) => setLogType(e.target.value as "breakfast" | "lunch" | "dinner" | "snack")}
+                className="rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2 text-sm"
+              >
+                <option value="breakfast">Breakfast</option>
+                <option value="lunch">Lunch</option>
+                <option value="dinner">Dinner</option>
+                <option value="snack">Snack</option>
+              </select>
+              <input
+                type="number"
+                value={logSugar}
+                onChange={(e) => setLogSugar(e.target.value)}
+                placeholder="Optional sugar (mg/dL)"
+                className="rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2 text-sm"
+              />
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <input
+                type="number"
+                value={logCarbs}
+                onChange={(e) => setLogCarbs(e.target.value)}
+                placeholder="Optional carbs (g)"
+                className="w-48 rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-1.5 text-xs"
+              />
+              <button
+                type="submit"
+                disabled={logBusy}
+                className="rounded-full bg-[#FF4D4D] px-5 py-2 text-xs font-semibold text-white hover:bg-[#e84141] disabled:opacity-50"
+              >
+                {logBusy ? "Saving…" : "Save Meal"}
+              </button>
+            </div>
+            {logMsg && <p className="text-xs font-semibold text-[#1D8353]">{logMsg}</p>}
+          </form>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {mealLog.length === 0 ? (
             <div className="gc-card p-6 text-sm text-[var(--text-muted)]">
               No meals logged yet for this patient.
@@ -144,6 +263,96 @@ export default function MealsPage() {
                 </div>
               </Link>
             ))
+          )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: Kitchen Chef — Make From My Ingredients */}
+      {tab === "chef" && (
+        <div className="space-y-4">
+          <form onSubmit={(e) => void handleChefGenerate(e)} className="gc-card p-5 space-y-4 border-[#F2A93B]/40">
+            <div className="flex items-center gap-2 font-display text-lg font-semibold">
+              <ChefHat className="h-5 w-5 text-[#FF4D4D]" />
+              Make a Sugar-Friendly Recipe From My Ingredients
+            </div>
+            <p className="text-xs text-[var(--text-muted)]">
+              Type what you have in your kitchen (e.g. eggs, spinach, tomato, whole wheat roti, chicken, chana). We compute exact carbs, sugar, fibre, glycemic load, and cooking steps.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <input
+                required
+                value={ingText}
+                onChange={(e) => setIngText(e.target.value)}
+                placeholder="eggs, spinach, tomato, whole wheat roti"
+                className="sm:col-span-3 rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3.5 py-2.5 text-sm"
+              />
+              <select
+                value={ingType}
+                onChange={(e) => setIngType(e.target.value as "breakfast" | "lunch" | "dinner" | "snack")}
+                className="rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2.5 text-sm"
+              >
+                <option value="breakfast">Breakfast</option>
+                <option value="lunch">Lunch</option>
+                <option value="dinner">Dinner</option>
+                <option value="snack">Snack</option>
+              </select>
+            </div>
+            <button
+              type="submit"
+              disabled={chefBusy}
+              className="rounded-full bg-[#FF4D4D] px-6 py-2.5 text-xs font-semibold text-white hover:bg-[#e84141] disabled:opacity-50"
+            >
+              {chefBusy ? "Computing nutrition & steps…" : "Generate Sugar-Friendly Recipe"}
+            </button>
+          </form>
+
+          {chefResult && (
+            <div className="gc-card p-6 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h2 className="font-display text-xl font-semibold">{chefResult.recipe_title}</h2>
+                <span className="rounded-full bg-[#239B62]/15 px-3 py-1 text-xs font-semibold text-[#1D8353]">
+                  Est. GL {chefResult.nutrition.estimated_gl}
+                </span>
+              </div>
+              <p className="rounded-xl bg-[#FBF6EF] border border-[#E9DCCB] p-3 text-sm font-medium text-[#2B1E2F]">
+                {chefResult.suitability_verdict}
+              </p>
+              <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-xs">
+                <div className="rounded-xl bg-[var(--bg-muted)] p-2.5">
+                  <div className="font-bold text-base">{chefResult.nutrition.carbs_g}g</div>
+                  <div className="text-[var(--text-muted)]">Carbs</div>
+                </div>
+                <div className="rounded-xl bg-[var(--bg-muted)] p-2.5">
+                  <div className="font-bold text-base">{chefResult.nutrition.sugar_g}g</div>
+                  <div className="text-[var(--text-muted)]">Sugar</div>
+                </div>
+                <div className="rounded-xl bg-[var(--bg-muted)] p-2.5">
+                  <div className="font-bold text-base">{chefResult.nutrition.fibre_g}g</div>
+                  <div className="text-[var(--text-muted)]">Fibre</div>
+                </div>
+                <div className="rounded-xl bg-[var(--bg-muted)] p-2.5">
+                  <div className="font-bold text-base">{chefResult.nutrition.protein_g}g</div>
+                  <div className="text-[var(--text-muted)]">Protein</div>
+                </div>
+                <div className="rounded-xl bg-[var(--bg-muted)] p-2.5">
+                  <div className="font-bold text-base">{chefResult.nutrition.fat_g}g</div>
+                  <div className="text-[var(--text-muted)]">Fat</div>
+                </div>
+                <div className="rounded-xl bg-[var(--bg-muted)] p-2.5">
+                  <div className="font-bold text-base">{chefResult.nutrition.calories_kcal}</div>
+                  <div className="text-[var(--text-muted)]">kcal</div>
+                </div>
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold mb-2">Cooking Steps</h3>
+                <ol className="list-decimal pl-5 space-y-1.5 text-sm text-[var(--text-muted)]">
+                  {chefResult.steps.map((st, idx) => (
+                    <li key={idx}>{st}</li>
+                  ))}
+                </ol>
+              </div>
+            </div>
           )}
         </div>
       )}

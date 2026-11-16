@@ -214,3 +214,83 @@ def test_high_sugar_200_dizzy_never_recommends_fast_sugar_and_mover_exercise_age
         ex_plan = client.get(f"/api/v1/patients/{pid}/exercise/plan", headers=headers)
         assert ex_plan.status_code == 200
         assert ex_plan.json()["mover"]["cards"][0]["weekly_minutes"] >= 15
+
+
+def test_daily_pulse_medicines_wellbeing_meals_and_profile_update() -> None:
+    with TestClient(app) as client:
+        email = "daily_pulse_user@example.com"
+        client.post("/api/v1/auth/register", json={"email": email, "password": "TestPassword123!"})
+        tok = client.post("/api/v1/auth/login", json={"email": email, "password": "TestPassword123!"}).json()["access_token"]
+        headers = {"Authorization": f"Bearer {tok}"}
+
+        pid = client.get("/api/v1/patients", headers=headers).json()[0]["id"]
+
+        # 1. Daily Pulse
+        dp = client.post(
+            f"/api/v1/patients/{pid}/daily-pulse",
+            json={"slot": "morning", "glucose_mg_dl": 148, "meds_taken_status": "taken", "feeling_note": "Feeling energetic after walk"},
+            headers=headers,
+        )
+        assert dp.status_code == 200
+        assert dp.json()["slot"] == "morning"
+        assert dp.json()["glucose_mg_dl"] == 148
+
+        # 2. Add Medicine & Check Summary Recommendations + Disclaimer
+        med_add = client.post(
+            f"/api/v1/patients/{pid}/medicines/add",
+            json={
+                "medication_name": "Metformin XR",
+                "drug_class": "Biguanide",
+                "recorded_dose": "500 mg",
+                "prescribed_schedule": "with dinner",
+                "units_on_hand": 30,
+            },
+            headers=headers,
+        )
+        assert med_add.status_code == 200
+        med_sum = client.get(f"/api/v1/patients/{pid}/medicines/summary", headers=headers)
+        assert med_sum.status_code == 200
+        ms = med_sum.json()
+        assert any(m["name"] == "Metformin XR" for m in ms["medications"])
+        assert len(ms["agent_recommendations"]) >= 1
+        assert "doctor" in ms["safety_disclaimer"].lower()
+
+        # 3. Wellbeing Chat & Doctor Visit Report
+        wb = client.post(
+            f"/api/v1/patients/{pid}/wellbeing/chat",
+            json={"message": "Feeling tired and stressed about sugar today", "mode": "deterministic_fallback"},
+            headers=headers,
+        )
+        assert wb.status_code == 200
+        assert wb.json()["saved_to_memory"] is True
+        assert wb.json()["reply"]
+
+        vr = client.get(f"/api/v1/patients/{pid}/visit-report", headers=headers)
+        assert vr.status_code == 200
+        vrj = vr.json()
+        assert len(vrj["wellbeing_notes"]) >= 1
+        assert "weekly_minutes" in vrj["exercise_summary"]
+
+        # 4. Log Meal & Make Recipe From Ingredients
+        ml = client.post(
+            f"/api/v1/patients/{pid}/meals/log",
+            json={"description": "2 egg omelette with 1 whole wheat roti", "meal_type": "breakfast", "carbs_g": 28, "glucose_mg_dl": 135},
+            headers=headers,
+        )
+        assert ml.status_code == 200
+
+        fi = client.post(
+            f"/api/v1/patients/{pid}/meals/from-ingredients",
+            json={"ingredients_text": "eggs, spinach, tomato, whole wheat roti", "meal_type": "breakfast"},
+            headers=headers,
+        )
+        assert fi.status_code == 200
+        fij = fi.json()
+        assert "nutrition" in fij
+        assert "suitability_verdict" in fij
+        assert len(fij["steps"]) >= 1
+
+        # 5. Update Display Name
+        up = client.patch(f"/api/v1/patients/{pid}", json={"display_name": "Sadia Personal"}, headers=headers)
+        assert up.status_code == 200
+        assert up.json()["display_name"] == "Sadia Personal"

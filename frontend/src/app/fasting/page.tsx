@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import Link from "next/link";
-import { AlertTriangle, ArrowLeft, Clock, Moon } from "lucide-react";
+import { AlertTriangle, Clock, Moon } from "lucide-react";
+import { BackToMoreButton } from "@/components/ui/BackToMoreButton";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient } from "@/services/api";
 
@@ -52,13 +53,11 @@ export default function FastingPage() {
 
   return (
     <div className="space-y-6">
-      <Link href="/more" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#FF4D4D]">
-        <ArrowLeft className="h-4 w-4" /> Back to Care Tools
-      </Link>
+      <BackToMoreButton />
       <div>
         <h1 className="font-display text-2xl sm:text-3xl font-semibold">Ramadan &amp; Fasting (Roza Guide)</h1>
         <p className="text-sm text-[var(--text-muted)]">
-          IDF-DAR 2021 fasting risk screening, Suhoor/Iftar meal ideas, and when to break the fast for safety.
+          Ramadan Fasting Safety Check, Suhoor/Iftar meal ideas, and when to break the fast for safety.
         </p>
       </div>
 
@@ -84,8 +83,11 @@ export default function FastingPage() {
         <form onSubmit={runRiskCheck} className="gc-card p-6 space-y-4">
           <div className="flex items-center gap-2">
             <Moon className="h-5 w-5 text-[#F2A93B]" />
-            <h2 className="font-display text-lg font-semibold">IDF-DAR Risk Check</h2>
+            <h2 className="font-display text-lg font-semibold">Ramadan Fasting Safety Check</h2>
           </div>
+          <p className="text-xs text-[var(--text-muted)]">
+            Checks if fasting is safe based on your kidney health, pregnancy status, and any recent low-sugar episodes.
+          </p>
 
           <label className="block text-xs space-y-1">
             <span>Latest kidney eGFR (leave blank if unknown)</span>
@@ -119,7 +121,7 @@ export default function FastingPage() {
             type="submit"
             className="w-full rounded-[14px] bg-[#FF4D4D] py-2.5 text-sm font-semibold text-white hover:bg-[#e84141]"
           >
-            Calculate IDF-DAR Tier
+            Check My Ramadan Fasting Safety
           </button>
 
           {(customRisk || rozaCard) && (

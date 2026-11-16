@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useCallback, useEffect, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, LogOut, ShieldAlert, Trash2 } from "lucide-react";
+import { LogOut, ShieldAlert, Trash2 } from "lucide-react";
+import { BackToMoreButton } from "@/components/ui/BackToMoreButton";
 import { usePatientContext } from "@/components/providers/PatientProvider";
 import { apiClient } from "@/services/api";
 import type { InvestigationRun, MemoryFact, PatientPreferencesOut } from "@/types/glycadence";
 
 export default function SettingsPage() {
-  const { patients, activePatientId, setActivePatientId, logout } = usePatientContext();
+  const { patients, activePatientId, activePatient, setActivePatientId, reloadPatients, logout } = usePatientContext();
+  const [displayName, setDisplayName] = useState("");
   const [prefs, setPrefs] = useState<PatientPreferencesOut | null>(null);
   const [memories, setMemories] = useState<MemoryFact[]>([]);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
@@ -29,12 +30,22 @@ export default function SettingsPage() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (activePatient?.display_name) {
+      setDisplayName(activePatient.display_name);
+    }
+  }, [activePatient?.display_name]);
+
   async function savePrefs(e: React.FormEvent) {
     e.preventDefault();
     if (!activePatientId || !prefs) return;
+    if (displayName.trim() && displayName.trim() !== activePatient?.display_name) {
+      await apiClient.updatePatientName(activePatientId, displayName.trim());
+      await reloadPatients();
+    }
     const updated = await apiClient.updatePreferences(activePatientId, prefs);
     setPrefs(updated);
-    setSavedMsg("Preferences updated.");
+    setSavedMsg("Profile & preferences updated.");
   }
 
   async function removeMemory(memId: string) {
@@ -56,9 +67,7 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <Link href="/more" className="inline-flex items-center gap-1.5 text-sm font-semibold text-[#FF4D4D]">
-        <ArrowLeft className="h-4 w-4" /> Back to Care Tools
-      </Link>
+      <BackToMoreButton />
       <div className="flex items-center justify-between gap-3">
         <div>
           <h1 className="font-display text-2xl sm:text-3xl font-semibold">Preferences &amp; Memory</h1>
@@ -81,6 +90,16 @@ export default function SettingsPage() {
         <form onSubmit={savePrefs} className="gc-card p-6 space-y-4">
           <h2 className="font-display text-lg font-semibold">Your Targets &amp; Profile</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+            <label className="space-y-1 sm:col-span-2">
+              <span className="text-xs text-[var(--text-muted)]">Your Name</span>
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Enter your name"
+                className="w-full rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2 font-medium"
+              />
+            </label>
             <label className="space-y-1">
               <span className="text-xs text-[var(--text-muted)]">Target range low (mg/dL)</span>
               <input
