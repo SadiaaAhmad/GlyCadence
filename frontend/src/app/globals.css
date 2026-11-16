@@ -1,20 +1,52 @@
 @import "tailwindcss";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 :root {
-  --background: #0b101b;
-  --foreground: #f8fafc;
-  --surface: #162032;
-  --surface-elevated: #1e293b;
-  --border: rgba(51, 65, 85, 0.6);
-  --primary: #0f4c5c;
-  --accent: #ff4d4d;
-  --emerald: #10b981;
+  --bg-page: #fbf6ef;
+  --bg-card: #ffffff;
+  --bg-muted: #f4ece0;
+  --text-ink: #2b1e2f;
+  --text-muted: #705f75;
+  --border-clay: #e9dccb;
+  --cadie-coral: #ff4d4d;
+  --saffron: #f2a93b;
+  --terracotta: #c8553d;
+  --berry: #8e2c5a;
 }
 
-html,
+.dark {
+  --bg-page: #1c1420;
+  --bg-card: #2a1f2e;
+  --bg-muted: #35273b;
+  --text-ink: #fbf6ef;
+  --text-muted: #b8a8be;
+  --border-clay: #43324a;
+  --cadie-coral: #ff5c5c;
+  --saffron: #f2a93b;
+  --terracotta: #e06d54;
+  --berry: #d16594;
+}
+
 body {
-  background-color: #0b101b;
-  color: #f8fafc;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", var(--font-geist-sans), "Segoe UI", sans-serif;
-  -webkit-font-smoothing: antialiased;
+  background-color: var(--bg-page);
+  color: var(--text-ink);
+  font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+.font-display {
+  font-family: var(--font-fraunces), Georgia, serif;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.gc-card {
+  background-color: var(--bg-card);
+  border: 1px solid var(--border-clay);
+  border-radius: 20px;
+  box-shadow: 0 2px 12px rgba(43, 30, 47, 0.06);
 }

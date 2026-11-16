@@ -1,0 +1,222 @@
+"use client";
+
+import React, { useCallback, useEffect, useState } from "react";
+import { HeartHandshake, ShieldAlert } from "lucide-react";
+import { usePatientContext } from "@/components/providers/PatientProvider";
+import { apiClient } from "@/services/api";
+import type { WellbeingSummaryResponse } from "@/types/glycadence";
+
+export default function WellbeingPage() {
+  const { activePatientId } = usePatientContext();
+  const [data, setData] = useState<WellbeingSummaryResponse | null>(null);
+
+  const [stress, setStress] = useState(2);
+  const [fatigue, setFatigue] = useState(2);
+  const [sleepHours, setSleepHours] = useState(7.0);
+  const [sleepQuality, setSleepQuality] = useState(4);
+  const [unwell, setUnwell] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
+
+  const [ddsQ1, setDdsQ1] = useState(2);
+  const [ddsQ2, setDdsQ2] = useState(2);
+  const [ddsResult, setDdsResult] = useState<{ average_score: number; elevated_distress: boolean; message: string } | null>(null);
+
+  const load = useCallback(async () => {
+    if (!activePatientId) return;
+    const res = await apiClient.getWellbeingSummary(activePatientId);
+    setData(res);
+  }, [activePatientId]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  async function saveCheckin(e: React.FormEvent) {
+    e.preventDefault();
+    if (!activePatientId) return;
+    await apiClient.createCheckin(activePatientId, {
+      stress_score: stress,
+      fatigue_score: fatigue,
+      sleep_hours: sleepHours,
+      sleep_quality: sleepQuality,
+      illness_flag: unwell,
+      mood_notes: notes.trim() || undefined,
+    });
+    setNotes("");
+    setSavedMsg("Check-in saved. Kindred updated your mood & sleep patterns.");
+    await load();
+  }
+
+  async function runDds2() {
+    if (!activePatientId) return;
+    const res = await apiClient.scoreDDS2(activePatientId, {
+      feeling_overwhelmed_1_to_6: ddsQ1,
+      failing_routine_1_to_6: ddsQ2,
+    });
+    setDdsResult(res);
+  }
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="font-display text-2xl sm:text-3xl font-semibold">Wellbeing (Kindred)</h1>
+        <p className="text-sm text-[var(--text-muted)]">
+          20-second mood, stress, sleep, and sick-day check-ins. Observed patterns only — never judgmental.
+        </p>
+      </div>
+
+      {/* Co-occurrence Findings */}
+      {(data?.agent_summary?.findings ?? []).length > 0 && (
+        <section className="gc-card p-5 space-y-2">
+          <div className="flex items-center gap-2 font-display text-base font-semibold">
+            <HeartHandshake className="h-4 w-4 text-[#FF4D4D]" />
+            Kindred Insights
+          </div>
+          {data?.agent_summary.findings.map((f) => (
+            <p key={f.id} className="text-sm text-[var(--text-muted)]">
+              {f.rendered_text}
+            </p>
+          ))}
+        </section>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* 20-Second Check-in Form */}
+        <form onSubmit={saveCheckin} className="gc-card p-6 space-y-4">
+          <h2 className="font-display text-lg font-semibold">20-Second Check-in</h2>
+
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <label className="space-y-1">
+              <span className="text-xs text-[var(--text-muted)]">Stress (1 calm – 5 high)</span>
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={stress}
+                onChange={(e) => setStress(Number(e.target.value))}
+                className="w-full rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-[var(--text-muted)]">Energy fatigue (1 fresh – 5 tired)</span>
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={fatigue}
+                onChange={(e) => setFatigue(Number(e.target.value))}
+                className="w-full rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-[var(--text-muted)]">Sleep hours</span>
+              <input
+                type="number"
+                step={0.5}
+                min={0}
+                max={24}
+                value={sleepHours}
+                onChange={(e) => setSleepHours(Number(e.target.value))}
+                className="w-full rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2"
+              />
+            </label>
+            <label className="space-y-1">
+              <span className="text-xs text-[var(--text-muted)]">Sleep quality (1–5)</span>
+              <input
+                type="number"
+                min={1}
+                max={5}
+                value={sleepQuality}
+                onChange={(e) => setSleepQuality(Number(e.target.value))}
+                className="w-full rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3 py-2"
+              />
+            </label>
+          </div>
+
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input type="checkbox" checked={unwell} onChange={(e) => setUnwell(e.target.checked)} />
+            <span>Feeling unwell today (fever, flu, stomach upset)?</span>
+          </label>
+
+          <input
+            type="text"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Optional short note (e.g., busy day, walked 15 min)..."
+            className="w-full rounded-xl border border-[var(--border-clay)] bg-[var(--bg-page)] px-3.5 py-2 text-sm"
+          />
+
+          {savedMsg && <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400">{savedMsg}</p>}
+
+          <button
+            type="submit"
+            className="w-full rounded-[14px] bg-[#FF4D4D] py-2.5 text-sm font-semibold text-white hover:bg-[#e84141]"
+          >
+            Save Check-in
+          </button>
+        </form>
+
+        {/* DDS-2 Distress Screener & Sick-Day Card */}
+        <div className="space-y-5">
+          <section className="gc-card p-6 space-y-3">
+            <h2 className="font-display text-lg font-semibold">Diabetes Distress Check (DDS-2)</h2>
+            <p className="text-xs text-[var(--text-muted)]">
+              Over the last 2 weeks (1 = not a problem, 6 = very serious problem):
+            </p>
+            <label className="block text-xs space-y-1">
+              <span>1. Feeling overwhelmed by the demands of living with diabetes</span>
+              <input
+                type="range"
+                min={1}
+                max={6}
+                value={ddsQ1}
+                onChange={(e) => setDdsQ1(Number(e.target.value))}
+                className="w-full"
+              />
+              <span className="font-semibold">Score: {ddsQ1} / 6</span>
+            </label>
+            <label className="block text-xs space-y-1">
+              <span>2. Feeling that I am often failing with my diabetes routine</span>
+              <input
+                type="range"
+                min={1}
+                max={6}
+                value={ddsQ2}
+                onChange={(e) => setDdsQ2(Number(e.target.value))}
+                className="w-full"
+              />
+              <span className="font-semibold">Score: {ddsQ2} / 6</span>
+            </label>
+            <button
+              type="button"
+              onClick={() => void runDds2()}
+              className="rounded-[14px] bg-[#2B1E2F] text-white dark:bg-[#F2A93B] dark:text-[#2B1E2F] px-4 py-2 text-xs font-semibold"
+            >
+              Check Distress Score
+            </button>
+            {ddsResult && (
+              <div className="rounded-xl bg-[var(--bg-muted)] p-3 text-xs space-y-1">
+                <div className="font-semibold">Average score: {ddsResult.average_score} / 6</div>
+                <p>{ddsResult.message}</p>
+              </div>
+            )}
+          </section>
+
+          <section className="gc-card p-5 space-y-2 border-[#C8553D]/40">
+            <div className="flex items-center gap-2 font-display text-base font-semibold text-[#C8553D]">
+              <ShieldAlert className="h-4 w-4" />
+              Sick-Day Helper Rules
+            </div>
+            <ul className="list-disc pl-5 text-xs space-y-1 text-[var(--text-muted)]">
+              <li>Sip water or sugar-free fluids every hour.</li>
+              <li>Check glucose every 3–4 hours when unwell.</li>
+              <li>Do not stop basal insulin or tablets without medical advice.</li>
+              <li>Call a clinician urgently if unable to keep fluids down or persistent &gt;250 mg/dL.</li>
+            </ul>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}

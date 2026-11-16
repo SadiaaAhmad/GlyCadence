@@ -1,6 +1,5 @@
-import React from "react";
-import { GlyCadenceWorkspace } from "@/components/workspace/GlyCadenceWorkspace";
+"use client";
 
-export default function DashboardPage() {
-  return <GlyCadenceWorkspace />;
-}
+import TodayPage from "@/app/page";
+
+export default TodayPage;
