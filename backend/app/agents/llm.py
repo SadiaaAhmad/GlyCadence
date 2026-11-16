@@ -263,3 +263,26 @@ def synthesize_narrative(
             meds=meds,
         )
         return draft, "deterministic_fallback", DETERMINISTIC_FALLBACK_MODEL, f"gemini_error:{exc.__class__.__name__}"
+
+
+def synthesize_plain_text(prompt: str, *, api_key: str, model: str) -> tuple[bool, str, str | None]:
+    """Lightweight text synthesis helper using configured google-genai SDK."""
+    if not _is_gemini_key_usable(api_key):
+        return False, "", "gemini_key_missing"
+    try:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.2),
+        )
+        txt = (resp.text or "").strip()
+        if not txt:
+            return False, "", "empty_response"
+        return True, txt, None
+    except Exception as exc:
+        logger.warning("Gemini plain synthesis fallback: %s", exc.__class__.__name__)
+        return False, "", exc.__class__.__name__

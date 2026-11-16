@@ -1,0 +1,170 @@
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.agents.verifier import verify_chat_reply
+from app.core.database import get_engine
+from app.main import app
+from app.models import AuditLog, Patient
+from app.services.synthetic_seed import ensure_v2_demo_environment
+
+
+def test_p2_chat_history_memory_and_urgent_safety_rules() -> None:
+    engine = get_engine()
+    assert engine is not None
+    with Session(bind=engine) as db:
+        p1, _ = ensure_v2_demo_environment(db)
+        p1_id = p1.id
+
+    with TestClient(app) as client:
+        email = f"p2_chat_{p1_id.hex[:8]}@example.com"
+        client.post("/api/v1/auth/register", json={"email": email, "password": "TestPassword123!"})
+        tok = client.post("/api/v1/auth/login", json={"email": email, "password": "TestPassword123!"}).json()["access_token"]
+        headers = {"Authorization": f"Bearer {tok}"}
+
+        # 1. Create chat session
+        s_res = client.post(f"/api/v1/patients/{p1_id}/chat/sessions", json={}, headers=headers)
+        assert s_res.status_code == 201
+        sid = s_res.json()["id"]
+
+        # 2. Urgent trigger ("my sugar is 55 and I'm shaking") -> zero LLM call, 15-15 urgent card
+        u_res = client.post(
+            f"/api/v1/patients/{p1_id}/chat/sessions/{sid}/messages",
+            json={"content": "my sugar is 55 and I'm shaking", "mode": "deterministic_fallback"},
+            headers=headers,
+        )
+        assert u_res.status_code == 200
+        u_json = u_res.json()
+        assert u_json["execution_mode"] == "deterministic_urgent"
+        assert u_json["cadie_message"]["cards"][0]["type"] == "urgent_card"
+        assert "15-15" in u_json["cadie_message"]["content"]
+
+        # Clean any stale vegetarian memory from prior test runs so extraction is tested freshly
+        for existing_m in client.get(f"/api/v1/patients/{p1_id}/memory", headers=headers).json():
+            if "vegetarian" in existing_m["fact_text"].lower():
+                client.delete(f"/api/v1/patients/{p1_id}/memory/{existing_m['id']}", headers=headers)
+
+        # 3. Normal question + durable memory extraction ("I'm vegetarian")
+        m_res = client.post(
+            f"/api/v1/patients/{p1_id}/chat/sessions/{sid}/messages",
+            json={"content": "Which lunches kept my glucose steady? Also I'm vegetarian", "mode": "deterministic_fallback"},
+            headers=headers,
+        )
+        assert m_res.status_code == 200
+        m_json = m_res.json()
+        assert "meal_advice" in m_json["patient_message"]["intents"]
+        assert m_json["cadie_message"]["safety_passed"] is True
+        assert any("vegetarian" in mem.lower() for mem in m_json["memories_added"])
+        assert len(m_json["helpers_used"]) >= 3
+
+        # 4. History persists across list/reload
+        hist = client.get(f"/api/v1/patients/{p1_id}/chat/sessions/{sid}/messages", headers=headers)
+        assert hist.status_code == 200
+        assert len(hist.json()) >= 4
+
+        # 5. Memory list & delete
+        mems = client.get(f"/api/v1/patients/{p1_id}/memory", headers=headers)
+        assert mems.status_code == 200
+        veg_mem = next((m for m in mems.json() if "vegetarian" in m["fact_text"].lower()), None)
+        assert veg_mem is not None
+        d_res = client.delete(f"/api/v1/patients/{p1_id}/memory/{veg_mem['id']}", headers=headers)
+        assert d_res.status_code == 204
+        mems_after = client.get(f"/api/v1/patients/{p1_id}/memory", headers=headers).json()
+        assert all(m["id"] != veg_mem["id"] for m in mems_after)
+
+        # 6. Audit logs must NOT contain raw chat free text
+        with Session(bind=engine) as db:
+            logs = list(db.scalars(select(AuditLog).where(AuditLog.patient_id == p1_id, AuditLog.resource_type == "chat_turn")).all())
+            assert len(logs) >= 1
+            for l in logs:
+                meta_str = str(l.context_metadata or {})
+                assert "vegetarian" not in meta_str
+                assert "message_sha256" in meta_str
+
+
+def test_p3_all_care_tool_agents_and_p6_visit_report() -> None:
+    engine = get_engine()
+    assert engine is not None
+    with Session(bind=engine) as db:
+        p1, _ = ensure_v2_demo_environment(db)
+        p1_id = p1.id
+
+    with TestClient(app) as client:
+        email = f"p3_tools_{p1_id.hex[:8]}@example.com"
+        client.post("/api/v1/auth/register", json={"email": email, "password": "TestPassword123!"})
+        tok = client.post("/api/v1/auth/login", json={"email": email, "password": "TestPassword123!"}).json()["access_token"]
+        headers = {"Authorization": f"Bearer {tok}"}
+
+        ov = client.get(f"/api/v1/patients/{p1_id}/overview", headers=headers)
+        assert ov.status_code == 200
+        assert ov.json()["hero"]["latest_mg_dl"] is not None
+
+        med = client.get(f"/api/v1/patients/{p1_id}/medicines/summary", headers=headers)
+        assert med.status_code == 200
+        assert len(med.json()["medications"]) >= 2
+        assert any(m["hypo_risk"] is True for m in med.json()["medications"])
+        assert "non-adher" not in str(med.json()).lower()
+
+        wb = client.get(f"/api/v1/patients/{p1_id}/wellbeing/summary", headers=headers)
+        assert wb.status_code == 200
+        assert len(wb.json()["checkins"]) >= 8
+
+        dds = client.post(
+            f"/api/v1/patients/{p1_id}/wellbeing/dds2",
+            json={"feeling_overwhelmed_1_to_6": 4, "failing_routine_1_to_6": 4},
+            headers=headers,
+        )
+        assert dds.status_code == 200
+        assert dds.json()["elevated_distress"] is True
+
+        roza = client.get(f"/api/v1/patients/{p1_id}/fasting/plan", headers=headers)
+        assert roza.status_code == 200
+        assert roza.json()["roza"]["cards"][0]["risk_tier"] in ("low", "moderate", "high")
+
+        vr = client.get(f"/api/v1/patients/{p1_id}/visit-report", headers=headers)
+        assert vr.status_code == 200
+        assert 3 <= len(vr.json()["questions"]) <= 5
+        assert all("why" in q for q in vr.json()["questions"])
+
+        vr_html = client.get(f"/api/v1/patients/{p1_id}/visit-report?format=html", headers=headers)
+        assert vr_html.status_code == 200
+        assert "GlyCadence Clinician Visit Report" in vr_html.text
+
+
+def test_p4_verify_chat_reply_safety_extensions() -> None:
+    bad_num = verify_chat_reply(
+        reply_text="Your average glucose is 999 mg/dL today.",
+        allowed_numbers={132.0},
+    )
+    assert not bad_num.passed
+    assert "numeric_ungrounded" in bad_num.failed_reasons
+
+    bad_dose = verify_chat_reply(
+        reply_text="You should increase 80 mg Gliclazide to 160 mg tomorrow.",
+        allowed_numbers={80.0, 160.0},
+        allowed_regimen_dose_tokens={"80 mg"},
+    )
+    assert not bad_dose.passed
+    assert "medication_dose_unsafe" in bad_dose.failed_reasons or "prescriptive_overclaim" in bad_dose.failed_reasons
+
+    bad_food = verify_chat_reply(
+        reply_text="Aloo paratha is a bad food that caused your sugar spike.",
+        allowed_numbers=set(),
+    )
+    assert not bad_food.passed
+    assert "judgmental_food_wording" in bad_food.failed_reasons
+    assert "causal_overclaim" in bad_food.failed_reasons
+
+    bad_urgent = verify_chat_reply(
+        reply_text="Drink some water and lie down.",
+        allowed_numbers=set(),
+        urgent_triggered=True,
+    )
+    assert not bad_urgent.passed
+    assert "missing_urgent_guidance" in bad_urgent.failed_reasons
+
+    good = verify_chat_reply(
+        reply_text="Your latest reading was 132 mg/dL and average rise after chana daal was 38 mg/dL.",
+        allowed_numbers={132.0, 38.0},
+    )
+    assert good.passed

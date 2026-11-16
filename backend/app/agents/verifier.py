@@ -372,7 +372,7 @@ def verify_agent_draft(
             failed_details.append("Drift direction claimed when deterministic status is insufficient_data.")
 
     # 4. Causal & statistical overclaim checks
-    for pat in (*CAUSAL_OVERCLAIM_PATTERNS, *WELLBEING_CAUSAL_PATTERNS):
+    for pat in (*CAUSAL_OVERCLAIM_PATTERNS, *WELLBEING_CAUSAL_PATTERNS, re.compile(r"\b(caused|causes)\s+(?:a|your|the|my)?\s*(?:sugar|glucose|blood\s+sugar)?\s*(?:spike|rise|drop|crash|excursion)\b", re.I)):
         m = pat.search(all_language_text)
         if m:
             if "causal_overclaim" not in failed_reasons:
@@ -420,6 +420,133 @@ def verify_agent_draft(
         failed_reasons=failed_reasons,
         failed_details=failed_details,
         named_thresholds_used=sorted(named_thresholds_used),
+        ungrounded_numbers=sorted(set(ungrounded_numbers)),
+        repair_attempts=repair_attempts,
+    )
+
+
+MEDICATION_DOSE_CHANGE_PATTERNS = (
+    re.compile(
+        r"\b(take|use|inject|increase|decrease|reduce|double|half)\s+(\d+(?:\.\d+)?)\s*(mg|mcg|units?|u\b|tablets?|pills?)",
+        re.I,
+    ),
+    re.compile(
+        r"\b(change|switch|adjust)\s+(your\s+)?(dose|dosage|medication|insulin|gliclazide|metformin)\s+to\b",
+        re.I,
+    ),
+)
+
+
+def verify_chat_reply(
+    *,
+    reply_text: str,
+    allowed_numbers: set[float],
+    allowed_regimen_dose_tokens: set[str] | None = None,
+    urgent_triggered: bool = False,
+    nutrient_values: set[float] | None = None,
+    timing_windows: set[str] | None = None,
+    evidence_items: Sequence[EvidenceItem] = (),
+    repair_attempts: int = 0,
+) -> VerifierReportOut:
+    """Phase P4 verifier extension for CADIE chat replies, meal details, timing, medications, and urgent alerts."""
+    checks_run = [
+        "chat_numeric_grounding",
+        "meal_detail_nutrient_grounding",
+        "timing_guidance_check",
+        "medication_dose_safety",
+        "urgent_language_check",
+        "causal_overclaim",
+        "prescriptive_overclaim",
+        "judgmental_food_wording",
+    ]
+    failed_reasons: list[str] = []
+    failed_details: list[str] = []
+    ungrounded_numbers: list[str] = []
+
+    permitted: set[float] = set(allowed_numbers)
+    if nutrient_values:
+        permitted.update(nutrient_values)
+    for ev in evidence_items:
+        for nv in _extract_evidence_numbers(ev):
+            permitted.add(nv)
+    permitted.update({2.0, 3.0, 4.0, 5.0, 12.0, 14.0, 15.0, 24.0, 30.0, 36.0, 54.0, 70.0, 180.0, 250.0, 300.0})
+
+    sanitized_for_nums = re.sub(r"\b\d{1,2}:\d{2}\b", " ", reply_text)
+    chat_num_re = re.compile(r"(?<![A-Za-z0-9_])-?\d+(?:\.\d+)?(?![A-Za-z0-9_])")
+    for m in chat_num_re.finditer(sanitized_for_nums):
+        raw_num = m.group(0)
+        try:
+            num = float(raw_num)
+        except ValueError:
+            continue
+        if num in permitted or any(abs(num - p) <= 0.6 for p in permitted):
+            continue
+        if "numeric_ungrounded" not in failed_reasons:
+            failed_reasons.append("numeric_ungrounded")
+        ungrounded_numbers.append(raw_num)
+        failed_details.append(f"Number {raw_num!r} in chat reply did not match computed specialist outputs.")
+
+    for pat in (*CAUSAL_OVERCLAIM_PATTERNS, *WELLBEING_CAUSAL_PATTERNS, re.compile(r"\b(caused|causes)\s+(?:a|your|the|my)?\s*(?:sugar|glucose|blood\s+sugar)?\s*(?:spike|rise|drop|crash|excursion)\b", re.I)):
+        m = pat.search(reply_text)
+        if m:
+            if "causal_overclaim" not in failed_reasons:
+                failed_reasons.append("causal_overclaim")
+            failed_details.append(f"Causal claim detected: {m.group(0)!r}")
+            break
+
+    for pat in PRESCRIPTIVE_OVERCLAIM_PATTERNS:
+        m = pat.search(reply_text)
+        if m:
+            if "prescriptive_overclaim" not in failed_reasons:
+                failed_reasons.append("prescriptive_overclaim")
+            failed_details.append(f"Prescriptive medication claim detected: {m.group(0)!r}")
+            break
+
+    for pat in JUDGMENTAL_FOOD_PATTERNS:
+        m = pat.search(reply_text)
+        if m:
+            if "judgmental_food_wording" not in failed_reasons:
+                failed_reasons.append("judgmental_food_wording")
+            failed_details.append(f"Judgmental food wording detected: {m.group(0)!r}")
+            break
+
+    allowed_doses = {d.lower() for d in (allowed_regimen_dose_tokens or set())}
+    for pat in MEDICATION_DOSE_CHANGE_PATTERNS:
+        m = pat.search(reply_text)
+        if m:
+            phrase = m.group(0).lower()
+            if not any(d in phrase for d in allowed_doses) or any(
+                w in phrase for w in ("increase", "decrease", "reduce", "double", "half", "change", "switch", "adjust", "take ", "inject ")
+            ):
+                if "medication_dose_unsafe" not in failed_reasons:
+                    failed_reasons.append("medication_dose_unsafe")
+                failed_details.append(f"Unsafe medication dosing language: {m.group(0)!r}")
+                break
+
+    if timing_windows is not None and timing_windows:
+        clock_mentions = re.findall(r"\b\d{1,2}:\d{2}\s*(?:am|pm)?\b", reply_text, re.I)
+        if clock_mentions:
+            norm_reply = reply_text.lower()
+            joined = " ".join(timing_windows).lower()
+            unmatched = [c for c in clock_mentions if c.lower() not in joined and "general guidance" not in norm_reply]
+            if unmatched and "ungrounded_timing" not in failed_reasons:
+                failed_reasons.append("ungrounded_timing")
+                failed_details.append(f"Timing mention {unmatched!r} missing timing planner basis or 'general guidance' label.")
+
+    if urgent_triggered:
+        low_txt = reply_text.lower()
+        if "15" not in low_txt or ("emergency" not in low_txt and "urgent" not in low_txt and "doctor" not in low_txt):
+            failed_reasons.append("missing_urgent_guidance")
+            failed_details.append("Urgent alert fired; reply must include 15-15 guidance and emergency/clinician contact.")
+
+    passed = len(failed_reasons) == 0
+    return VerifierReportOut(
+        passed=passed,
+        verification_status="passed" if passed else "rejected",
+        checks_run=checks_run,
+        failed_reasons=failed_reasons,
+        failed_details=failed_details,
+        named_thresholds_used=["ADA TIR 70-180 mg/dL", "Hypo <70 mg/dL", "IDF-DAR fasting rules"],
         ungrounded_numbers=sorted(set(ungrounded_numbers)),
         repair_attempts=repair_attempts,
     )
