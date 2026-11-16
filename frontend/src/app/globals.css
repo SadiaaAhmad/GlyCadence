@@ -1,53 +1,20 @@
 @import "tailwindcss";
 
-@custom-variant dark (&:where(.dark, .dark *));
-
 :root {
-  --background: #fbfbfd;
-  --foreground: #0f172a;
-  --surface: #ffffff;
-  --surface-muted: #f1f5f9;
-  --border: #e2e8f0;
-  --primary: #0f4c5c;
-  --primary-foreground: #ffffff;
-  --accent: #ff4d4d;
-  --accent-soft: #fff1f1;
-  --muted-foreground: #475569;
-  --success: #0f766e;
-  --warning: #b45309;
-}
-
-.dark {
-  --background: #090d16;
+  --background: #0b101b;
   --foreground: #f8fafc;
-  --surface: #111827;
-  --surface-muted: #1e293b;
-  --border: #1e293b;
-  --primary: #146c80;
-  --primary-foreground: #ffffff;
-  --accent: #ff5c5c;
-  --accent-soft: #2d1215;
-  --muted-foreground: #94a3b8;
-  --success: #14b8a6;
-  --warning: #f59e0b;
+  --surface: #162032;
+  --surface-elevated: #1e293b;
+  --border: rgba(51, 65, 85, 0.6);
+  --primary: #0f4c5c;
+  --accent: #ff4d4d;
+  --emerald: #10b981;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-primary: var(--primary);
-  --color-accent: var(--accent);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-html {
-  scroll-behavior: smooth;
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background-color: #0b101b;
+  color: #f8fafc;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", var(--font-geist-sans), "Segoe UI", sans-serif;
-  transition: background-color 200ms ease, color 200ms ease;
+  -webkit-font-smoothing: antialiased;
 }
