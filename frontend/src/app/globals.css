@@ -52,3 +52,87 @@ body {
   border-radius: 16px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
 }
+
+@keyframes gc-drop-bounce {
+  0% {
+    opacity: 0;
+    transform: translateY(-48px) scale(0.85, 1.12);
+  }
+  38% {
+    opacity: 1;
+    transform: translateY(6px) scale(1.08, 0.9);
+  }
+  56% {
+    transform: translateY(-10px) scale(0.96, 1.05) rotate(-4deg);
+  }
+  72% {
+    transform: translateY(2px) scale(1.03, 0.97) rotate(4deg);
+  }
+  86% {
+    transform: translateY(-3px) scale(0.99, 1.01) rotate(-2deg);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1, 1) rotate(0deg);
+  }
+}
+
+@keyframes gc-happy-hop {
+  0%, 100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-6px) rotate(-4deg);
+  }
+  50% {
+    transform: translateY(0) rotate(0deg);
+  }
+  75% {
+    transform: translateY(-4px) rotate(4deg);
+  }
+}
+
+@keyframes gc-shadow-pulse {
+  0% {
+    opacity: 0;
+    transform: scaleX(0.4);
+  }
+  38% {
+    opacity: 0.25;
+    transform: scaleX(1.1);
+  }
+  56% {
+    opacity: 0.14;
+    transform: scaleX(0.82);
+  }
+  100% {
+    opacity: 0.2;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes gc-word-up {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-gc-mascot {
+  animation:
+    gc-drop-bounce 0.95s cubic-bezier(0.22, 1, 0.36, 1) forwards,
+    gc-happy-hop 1.6s ease-in-out 1.05s infinite;
+}
+
+.animate-gc-shadow {
+  animation: gc-shadow-pulse 0.95s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.animate-gc-word {
+  opacity: 0;
+  animation: gc-word-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.55s forwards;
+}

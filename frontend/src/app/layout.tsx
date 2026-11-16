@@ -3,6 +3,7 @@ import { Fraunces, Inter } from "next/font/google";
 import "./globals.css";
 import { PatientProvider } from "@/components/providers/PatientProvider";
 import { AppShell } from "@/components/layout/AppShell";
+import { SplashIntro } from "@/components/layout/SplashIntro";
 
 const fraunces = Fraunces({
   variable: "--font-fraunces",
@@ -30,6 +31,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${fraunces.variable} ${inter.variable} h-full antialiased`}>
       <body className="min-h-full">
+        <SplashIntro />
         <PatientProvider>
           <AppShell>{children}</AppShell>
         </PatientProvider>
