@@ -1,6 +1,6 @@
 from datetime import timedelta
 from statistics import mean
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -520,30 +520,114 @@ def create_recipe_from_ingredients(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Annotated[Session, Depends(get_db)],
 ) -> dict:
-    """Match patient's available kitchen ingredients against FoodItems, compute exact nutrition, and draft a sugar-friendly recipe."""
+    """Match patient's exact kitchen ingredients against FoodItems or built-in nutrition table, compute exact nutrition, and draft a strict recipe."""
+    import re
     from app.agents.llm import _is_gemini_key_usable, synthesize_plain_text
     from app.core.config import get_settings
 
     patient = require_patient_access(patient_id, current_user, db, write=False)
     ensure_food_and_recipe_catalog(db)
     all_foods = list(db.scalars(select(FoodItem)).all())
-    tokens = [t.strip().lower() for t in payload.ingredients_text.replace(";", ",").split(",") if t.strip()]
 
-    matched: list[tuple[float, FoodItem]] = []
+    raw_tokens = [
+        re.sub(r"^(and|fresh|some|a|an)\s+", "", t.strip().lower()).strip()
+        for t in re.split(r"[,;\n]+", payload.ingredients_text)
+        if t.strip()
+    ]
+    tokens = [t for t in raw_tokens if t]
+
+    # Built-in per-100g nutrition + standard home serving (grams) for common kitchen items
+    # (grams, carbs_100, sugar_100, fibre_100, protein_100, fat_100, kcal_100, gi)
+    BUILTIN_NUTRITION: dict[str, tuple[float, float, float, float, float, float, float, float]] = {
+        "egg": (100.0, 1.1, 1.1, 0.0, 12.6, 10.6, 155.0, 0.0),
+        "eggs": (100.0, 1.1, 1.1, 0.0, 12.6, 10.6, 155.0, 0.0),
+        "black pepper": (2.0, 64.0, 0.6, 25.0, 10.4, 3.3, 251.0, 15.0),
+        "pepper": (2.0, 64.0, 0.6, 25.0, 10.4, 3.3, 251.0, 15.0),
+        "mango": (80.0, 15.0, 13.7, 1.6, 0.8, 0.4, 60.0, 51.0),
+        "carrot": (70.0, 9.6, 4.7, 2.8, 0.9, 0.2, 41.0, 39.0),
+        "carrots": (70.0, 9.6, 4.7, 2.8, 0.9, 0.2, 41.0, 39.0),
+        "spinach": (100.0, 3.6, 0.4, 2.2, 2.9, 0.4, 23.0, 15.0),
+        "tomato": (90.0, 3.9, 2.6, 1.2, 0.9, 0.2, 18.0, 15.0),
+        "tomatoes": (90.0, 3.9, 2.6, 1.2, 0.9, 0.2, 18.0, 15.0),
+        "onion": (60.0, 9.3, 4.2, 1.7, 1.1, 0.1, 40.0, 15.0),
+        "garlic": (6.0, 33.0, 1.0, 2.1, 6.4, 0.5, 149.0, 15.0),
+        "cucumber": (100.0, 3.6, 1.7, 0.5, 0.7, 0.1, 15.0, 15.0),
+        "chicken": (120.0, 0.0, 0.0, 0.0, 27.0, 3.6, 165.0, 0.0),
+        "fish": (120.0, 0.0, 0.0, 0.0, 22.0, 5.0, 135.0, 0.0),
+        "yogurt": (100.0, 4.7, 4.7, 0.0, 3.5, 3.3, 61.0, 35.0),
+        "paneer": (80.0, 1.2, 1.2, 0.0, 18.3, 20.8, 265.0, 27.0),
+        "cheese": (40.0, 1.3, 0.5, 0.0, 25.0, 33.0, 402.0, 27.0),
+        "milk": (150.0, 4.8, 5.0, 0.0, 3.4, 3.3, 61.0, 31.0),
+        "apple": (120.0, 13.8, 10.4, 2.4, 0.3, 0.2, 52.0, 36.0),
+        "banana": (100.0, 22.8, 12.2, 2.6, 1.1, 0.3, 89.0, 51.0),
+        "potato": (100.0, 17.5, 0.8, 2.2, 2.0, 0.1, 77.0, 78.0),
+        "rice": (100.0, 28.0, 0.1, 0.4, 2.7, 0.3, 130.0, 73.0),
+        "oats": (40.0, 66.3, 1.0, 10.6, 16.9, 6.9, 389.0, 55.0),
+        "roti": (45.0, 46.0, 1.5, 6.0, 9.0, 3.5, 250.0, 62.0),
+        "whole wheat roti": (45.0, 46.0, 1.5, 6.0, 9.0, 3.5, 250.0, 62.0),
+        "olive oil": (5.0, 0.0, 0.0, 0.0, 0.0, 100.0, 884.0, 0.0),
+        "butter": (5.0, 0.1, 0.1, 0.0, 0.9, 81.0, 717.0, 0.0),
+        "lemon": (15.0, 9.3, 2.5, 2.8, 1.1, 0.3, 29.0, 20.0),
+        "ginger": (5.0, 18.0, 1.7, 2.0, 1.8, 0.8, 80.0, 15.0),
+    }
+
+    ing_list: list[dict[str, Any]] = []
+    tot_c = tot_s = tot_f = tot_p = tot_fat = tot_k = tot_gl = 0.0
+
     for tok in tokens:
+        if tok in BUILTIN_NUTRITION:
+            g, c100, s100, f100, p100, fat100, k100, gi = BUILTIN_NUTRITION[tok]
+            ing_list.append({"name": tok.title(), "grams": g})
+            tot_c += c100 * g / 100.0
+            tot_s += s100 * g / 100.0
+            tot_f += f100 * g / 100.0
+            tot_p += p100 * g / 100.0
+            tot_fat += fat100 * g / 100.0
+            tot_k += k100 * g / 100.0
+            net_c = max(0.0, (c100 - f100) * g / 100.0)
+            tot_gl += (gi * net_c) / 100.0
+            continue
+
+        # Word-level match against FoodItem catalog
+        matched_food = None
+        tok_words = set(re.findall(r"[a-z]+", tok))
         for f in all_foods:
-            if tok in f.name.lower() or tok in f.slug.replace("_", " "):
-                # Sensible standard home portion in grams
-                grams = 120.0 if any(w in f.slug for w in ("daal", "chana", "chicken", "fish", "keema", "okra", "spinach", "yogurt")) else (40.0 if "flour" in f.slug or "oats" in f.slug else 60.0)
-                if not any(m_f.id == f.id for _, m_f in matched):
-                    matched.append((grams, f))
+            f_words = set(re.findall(r"[a-z]+", f.name.lower()))
+            if tok == f.name.lower() or (tok_words and tok_words.issubset(f_words)):
+                matched_food = f
                 break
+        if matched_food:
+            g = 100.0
+            ing_list.append({"name": matched_food.name, "grams": g})
+            sub = compute_recipe_nutrition([(g, matched_food)])
+            tot_c += sub.carbs_g
+            tot_s += sub.sugar_g
+            tot_f += sub.fibre_g
+            tot_p += sub.protein_g
+            tot_fat += sub.fat_g
+            tot_k += sub.kcal
+            tot_gl += sub.estimated_gl
+        else:
+            # Conservative home estimate for an unlisted spice/produce item
+            g = 50.0
+            ing_list.append({"name": tok.title(), "grams": g})
+            tot_c += 4.0
+            tot_s += 1.5
+            tot_f += 1.5
+            tot_p += 1.5
+            tot_fat += 0.5
+            tot_k += 28.0
+            tot_gl += 1.5
 
-    if not matched:
-        # Fallback to balanced staples if user typed unfamiliar spelling
-        matched = [(100.0, f) for f in all_foods[:3]]
+    carbs_g = round(tot_c, 1)
+    sugar_g = round(tot_s, 1)
+    fibre_g = round(tot_f, 1)
+    protein_g = round(tot_p, 1)
+    fat_g = round(tot_fat, 1)
+    kcal = round(tot_k)
+    estimated_gl = round(tot_gl, 1)
+    gl_band = "Low" if estimated_gl <= 10 else ("Medium" if estimated_gl <= 19 else "High")
 
-    nut = compute_recipe_nutrition(matched)
     latest_g = db.scalar(
         select(GlucoseReading)
         .where(GlucoseReading.patient_id == patient.id)
@@ -552,32 +636,34 @@ def create_recipe_from_ingredients(
     )
     latest_val = latest_g.glucose_mg_dl if latest_g else None
 
-    if nut.gl_band == "Low" and nut.sugar_g <= 6.0:
+    if gl_band == "Low" and sugar_g <= 8.0:
         verdict = "Suitable — gentle sugar & glycaemic load for your current readings."
-    elif nut.gl_band == "Medium":
-        verdict = "Suitable in a measured portion; pair with extra cucumber/salad or a 15-min walk."
+    elif gl_band == "Medium":
+        verdict = "Suitable in a measured portion; pair with protein or a 15-min walk after eating."
     else:
-        verdict = "Higher carb/sugar load — consider a smaller portion or swapping half the grain for daal/vegetables."
+        verdict = "Higher carb/sugar load — consider a smaller portion or pairing with extra protein/vegetables."
 
     if latest_val is not None and latest_val > 180:
-        verdict += f" (Note: your latest reading is {round(latest_val)} mg/dL, so keep starch portion modest.)"
+        verdict += f" (Note: your latest reading is {round(latest_val)} mg/dL, so keep sweet/starchy portions small.)"
 
-    ing_list = [{"name": f.name, "grams": g} for g, f in matched]
+    used_names = ", ".join(item["name"] for item in ing_list) or payload.ingredients_text
     steps = [
-        f"Combine {', '.join(f.name.split('(')[0].strip() for _, f in matched)} using minimal oil (1 tsp) and fresh spices (cumin, turmeric, coriander).",
-        "Cook until tender and plate half your dish with non-starchy salad or greens if available.",
+        f"Prep only your listed ingredients: {used_names}.",
+        "Cook the savoury protein/vegetables gently with minimal oil (1 tsp) and season as listed; serve any fresh fruit/salad side in a small measured portion.",
     ]
 
     settings = get_settings()
     if _is_gemini_key_usable(settings.gemini_api_key):
         prompt = (
-            f"Create 3 short home-style Pakistani cooking steps for a {payload.meal_type} using ONLY: "
-            + ", ".join(f"{g:.0f}g {f.name}" for g, f in matched)
-            + ". Keep it diabetes-friendly (no added sugar, minimal oil). Return 3 numbered sentences only."
+            f"Create 3 short diabetes-friendly {payload.meal_type} cooking steps using STRICTLY ONLY these ingredients: "
+            + ", ".join(f"{item['grams']:.0f}g {item['name']}" for item in ing_list)
+            + " (plus water, pinch of salt, or 1 tsp oil if cooking). "
+            "NEVER add wheat, atta, oats, besan, bread, rice, sugar, or any ingredient not in that list. "
+            "Return 3 plain sentences separated by newlines WITHOUT step numbers (no '1.', '2.')."
         )
         ok, g_steps, _ = synthesize_plain_text(prompt, api_key=settings.gemini_api_key or "", model=settings.gemini_model)
         if ok and g_steps:
-            parsed_steps = [s.strip() for s in g_steps.splitlines() if s.strip()]
+            parsed_steps = [re.sub(r"^\d+[\.\)]\s*", "", s.strip()) for s in g_steps.splitlines() if s.strip()]
             if parsed_steps:
                 steps = parsed_steps[:4]
 
@@ -585,14 +671,15 @@ def create_recipe_from_ingredients(
         "recipe_title": f"Custom {payload.meal_type.title()} from Your Kitchen",
         "matched_ingredients": ing_list,
         "nutrition": {
-            "carbs_g": nut.carbs_g,
-            "sugar_g": nut.sugar_g,
-            "fibre_g": nut.fibre_g,
-            "protein_g": nut.protein_g,
-            "fat_g": nut.fat_g,
-            "kcal": nut.kcal,
-            "estimated_gl": nut.estimated_gl,
-            "gl_band": nut.gl_band,
+            "carbs_g": carbs_g,
+            "sugar_g": sugar_g,
+            "fibre_g": fibre_g,
+            "protein_g": protein_g,
+            "fat_g": fat_g,
+            "kcal": kcal,
+            "calories_kcal": kcal,
+            "estimated_gl": estimated_gl,
+            "gl_band": gl_band,
         },
         "suitability_verdict": verdict,
         "steps": steps,

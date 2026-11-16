@@ -102,7 +102,8 @@ def run_rhythm_agent(db: Session, patient: Patient, readings: list[GlucoseReadin
     cards: list[dict[str, Any]] = []
     needs_clinician = False
 
-    if not cgm_pts:
+    ordered_all = sorted(readings, key=lambda r: r.recorded_at)
+    if not cgm_pts and not ordered_all:
         return AgentResult(
             agent="glucose_patterns",
             helper_name="Rhythm",
@@ -119,9 +120,10 @@ def run_rhythm_agent(db: Session, patient: Patient, readings: list[GlucoseReadin
             data_used={"cgm_readings": 0},
         ).to_dict()
 
-    # Sub-agent 1: Today Snapshot
-    latest = cgm_pts[-1]
-    prev = cgm_pts[-4] if len(cgm_pts) >= 4 else cgm_pts[0]
+    # Sub-agent 1: Today Snapshot — prefer the newest reading overall (including Daily Pulse)
+    pts_for_latest = ordered_all if ordered_all else cgm_pts
+    latest = pts_for_latest[-1]
+    prev = pts_for_latest[-4] if len(pts_for_latest) >= 4 else pts_for_latest[0]
     dt_min = max(1.0, (latest.recorded_at - prev.recorded_at).total_seconds() / 60.0)
     rate = (latest.glucose_mg_dl - prev.glucose_mg_dl) / dt_min
     arrow_word = "rising" if rate >= 1.0 else ("falling" if rate <= -1.0 else "steady")

@@ -110,7 +110,7 @@ def get_glucose_readings(
     # Determine effective window anchored to patient's latest reading if end is None
     latest_row = db.scalar(
         select(GlucoseReading)
-        .where(GlucoseReading.patient_id == patient.id, GlucoseReading.reading_type == "cgm")
+        .where(GlucoseReading.patient_id == patient.id)
         .order_by(GlucoseReading.recorded_at.desc())
         .limit(1)
     )
@@ -122,7 +122,6 @@ def get_glucose_readings(
             select(GlucoseReading)
             .where(
                 GlucoseReading.patient_id == patient.id,
-                GlucoseReading.reading_type == "cgm",
                 GlucoseReading.recorded_at >= anchor_start,
                 GlucoseReading.recorded_at <= anchor_end,
             )

@@ -225,7 +225,7 @@ def test_daily_pulse_medicines_wellbeing_meals_and_profile_update() -> None:
 
         pid = client.get("/api/v1/patients", headers=headers).json()[0]["id"]
 
-        # 1. Daily Pulse
+        # 1. Daily Pulse & verify Sensor Graph + Overview update immediately
         dp = client.post(
             f"/api/v1/patients/{pid}/daily-pulse",
             json={"slot": "morning", "glucose_mg_dl": 148, "meds_taken_status": "taken", "feeling_note": "Feeling energetic after walk"},
@@ -234,6 +234,10 @@ def test_daily_pulse_medicines_wellbeing_meals_and_profile_update() -> None:
         assert dp.status_code == 200
         assert dp.json()["slot"] == "morning"
         assert dp.json()["glucose_mg_dl"] == 148
+
+        gl_res = client.get(f"/api/v1/patients/{pid}/glucose/readings?days=1", headers=headers)
+        assert gl_res.status_code == 200
+        assert gl_res.json()["latest_glucose_mg_dl"] == 148.0
 
         # 2. Add Medicine & Check Summary Recommendations + Disclaimer
         med_add = client.post(
@@ -281,12 +285,18 @@ def test_daily_pulse_medicines_wellbeing_meals_and_profile_update() -> None:
 
         fi = client.post(
             f"/api/v1/patients/{pid}/meals/from-ingredients",
-            json={"ingredients_text": "eggs, spinach, tomato, whole wheat roti", "meal_type": "breakfast"},
+            json={"ingredients_text": "eggs, black pepper , mango ,and carrot", "meal_type": "dinner"},
             headers=headers,
         )
         assert fi.status_code == 200
         fij = fi.json()
         assert "nutrition" in fij
+        assert fij["nutrition"]["calories_kcal"] > 0
+        assert fij["nutrition"]["carbs_g"] < 45
+        steps_joined = " ".join(fij["steps"]).lower()
+        assert "oats" not in steps_joined
+        assert "atta" not in steps_joined
+        assert "besan" not in steps_joined
         assert "suitability_verdict" in fij
         assert len(fij["steps"]) >= 1
 

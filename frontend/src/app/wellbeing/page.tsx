@@ -103,7 +103,9 @@ export default function WellbeingPage() {
               <div
                 key={idx}
                 className={`rounded-xl px-3.5 py-2.5 text-sm ${
-                  m.role === "user" ? "ml-auto max-w-[85%] bg-[#FF4D4D] text-white" : "mr-auto max-w-[90%] bg-white border border-[var(--border-clay)]"
+                  m.role === "user"
+                    ? "ml-auto max-w-[85%] bg-[#FF4D4D] text-white"
+                    : "mr-auto max-w-[90%] bg-[var(--bg-muted)] text-[var(--text-main)] border border-[var(--border-clay)]"
                 }`}
               >
                 <p className="whitespace-pre-line">{m.text}</p>

@@ -651,8 +651,8 @@ def submit_daily_pulse(
                 )
             )
 
-    if payload.feeling_note and payload.feeling_note.strip():
-        note_clean = payload.feeling_note.strip()
+    note_clean = payload.feeling_note.strip() if payload.feeling_note and payload.feeling_note.strip() else ""
+    if note_clean:
         db.add(
             WellbeingRecord(
                 id=uuid.uuid4(),
@@ -663,16 +663,20 @@ def submit_daily_pulse(
                 source_dataset="app_user",
             )
         )
-        db.add(
-            PatientMemory(
-                id=uuid.uuid4(),
-                patient_id=patient.id,
-                cohort_type=patient.cohort_type,
-                fact_type="medical_context",
-                fact_text=f"Daily {payload.slot} note ({now_utc.date()}): {note_clean[:160]}",
-                confidence="high",
-            )
+
+    pulse_summary = f"Daily {payload.slot} check-in ({now_utc.date()}): sugar {round(payload.glucose_mg_dl)} mg/dL, meds {payload.meds_taken_status}"
+    if note_clean:
+        pulse_summary += f", note: {note_clean[:120]}"
+    db.add(
+        PatientMemory(
+            id=uuid.uuid4(),
+            patient_id=patient.id,
+            cohort_type=patient.cohort_type,
+            fact_type="medical_context",
+            fact_text=pulse_summary,
+            confidence="high",
         )
+    )
 
     db.commit()
     return {

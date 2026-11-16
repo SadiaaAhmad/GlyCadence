@@ -116,7 +116,7 @@ export default function MealsPage() {
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-1.5 bg-[var(--bg-muted)] p-1 rounded-full">
+        <div className="flex flex-wrap gap-1 bg-[var(--bg-muted)] p-1 rounded-full">
           {[
             { id: "plan", label: "My Plan" },
             { id: "log", label: "Log & History" },
@@ -127,10 +127,10 @@ export default function MealsPage() {
               key={t.id}
               type="button"
               onClick={() => setTab(t.id as "plan" | "log" | "ideas" | "chef")}
-              className={`rounded-full px-4 py-1.5 text-xs font-semibold transition-colors ${
+              className={`whitespace-nowrap rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
                 tab === t.id
                   ? "bg-[#2B1E2F] text-white dark:bg-[#F2A93B] dark:text-[#2B1E2F]"
-                  : "text-[var(--text-muted)]"
+                  : "text-[var(--text-muted)] hover:text-[var(--text-main)]"
               }`}
             >
               {t.label}
@@ -315,7 +315,7 @@ export default function MealsPage() {
                   Est. GL {chefResult.nutrition.estimated_gl}
                 </span>
               </div>
-              <p className="rounded-xl bg-[#FBF6EF] border border-[#E9DCCB] p-3 text-sm font-medium text-[#2B1E2F]">
+              <p className="rounded-xl bg-[var(--bg-page)] border border-[var(--border-clay)] p-3 text-sm font-medium text-[var(--text-main)]">
                 {chefResult.suitability_verdict}
               </p>
               <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-center text-xs">

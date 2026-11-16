@@ -71,9 +71,9 @@ export default function VisitPage() {
             <section className="gc-card p-6 space-y-2">
               <h2 className="font-display text-lg font-semibold">Weekly Activity Progress (Mover)</h2>
               <p className="text-sm text-[var(--text-muted)]">
-                Aerobic minutes: <strong className="text-[#2B1E2F]">{report.exercise_summary.weekly_minutes}</strong> / {report.exercise_summary.target_minutes} min
+                Aerobic minutes: <strong className="text-[var(--text-main)]">{report.exercise_summary.weekly_minutes}</strong> / {report.exercise_summary.target_minutes} min
                 {" · "}
-                Strength sessions: <strong className="text-[#2B1E2F]">{report.exercise_summary.resistance_sessions}</strong> / {report.exercise_summary.resistance_target}
+                Strength sessions: <strong className="text-[var(--text-main)]">{report.exercise_summary.resistance_sessions}</strong> / {report.exercise_summary.resistance_target}
               </p>
             </section>
           )}
