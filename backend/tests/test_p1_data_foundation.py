@@ -41,7 +41,7 @@ def test_p1_tables_and_30_recipes_nutrition_sum() -> None:
             expected_sugar = round(sum((i.grams / 100.0) * foods[i.food_item_id].sugar_g_per_100g for i in ings), 1)
             assert nut.carbs_g == expected_carbs
             assert nut.sugar_g == expected_sugar
-            assert rec.image_url.startswith("https://")
+            assert rec.image_url.startswith("/images/meals/") or rec.image_url.startswith("https://")
 
 
 def test_p1_synthetic_patients_have_aligned_valid_meals_and_readings_endpoints() -> None:

@@ -46,6 +46,14 @@ export function PatientProvider({ children }: { children: React.ReactNode }) {
     setDark(isDark);
     document.documentElement.classList.toggle("dark", isDark);
     setReady(true);
+
+    const onUnauthorized = () => {
+      setToken(null);
+      setPatients([]);
+      setActivePatientIdState("");
+    };
+    window.addEventListener("glycadence:unauthorized", onUnauthorized);
+    return () => window.removeEventListener("glycadence:unauthorized", onUnauthorized);
   }, []);
 
   const toggleDark = useCallback(() => {

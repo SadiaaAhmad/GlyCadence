@@ -48,16 +48,22 @@ function AskCadieContent() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [lastTurnMeta, setLastTurnMeta] = useState<ChatTurnResponse | null>(null);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [showSheet, setShowSheet] = useState(false);
   const [forClinicians, setForClinicians] = useState(false);
-  const [autoSentInitial, setAutoSentInitial] = useState(false);
+  const [sessionsLoaded, setSessionsLoaded] = useState(false);
+  const autoSentRef = React.useRef(false);
 
   const loadSessions = useCallback(async () => {
     if (!activePatientId) return;
-    const list = await apiClient.listChatSessions(activePatientId, searchQuery || undefined);
-    setSessions(list);
-    if (list.length > 0 && !activeSessionId) {
-      setActiveSessionId(list[0].id);
+    try {
+      const list = await apiClient.listChatSessions(activePatientId, searchQuery || undefined);
+      setSessions(list);
+      if (list.length > 0 && !activeSessionId) {
+        setActiveSessionId(list[0].id);
+      }
+    } finally {
+      setSessionsLoaded(true);
     }
   }, [activePatientId, searchQuery, activeSessionId]);
 
@@ -82,30 +88,33 @@ function AskCadieContent() {
     async (text: string) => {
       if (!activePatientId || !text.trim() || sending) return;
       setSending(true);
+      setChatError(null);
       try {
-        let sid = activeSessionId;
+        let sid = activeSessionId || (sessions.length > 0 ? sessions[0].id : "");
         if (!sid) {
           const created = await apiClient.createChatSession(activePatientId, text.trim().slice(0, 60));
           sid = created.id;
-          setActiveSessionId(sid);
         }
+        setActiveSessionId(sid);
         const turn = await apiClient.sendChatMessage(activePatientId, sid, text.trim(), "auto");
         setLastTurnMeta(turn);
         setMessages((prev) => [...prev, turn.patient_message, turn.cadie_message]);
         void loadSessions();
+      } catch (err) {
+        setChatError(err instanceof Error ? err.message : "Could not reach Cadie right now.");
       } finally {
         setSending(false);
       }
     },
-    [activePatientId, activeSessionId, sending, loadSessions]
+    [activePatientId, activeSessionId, sessions, sending, loadSessions]
   );
 
   useEffect(() => {
-    if (initialQuery && activePatientId && !autoSentInitial) {
-      setAutoSentInitial(true);
+    if (initialQuery && activePatientId && sessionsLoaded && !autoSentRef.current) {
+      autoSentRef.current = true;
       void sendMessageText(initialQuery);
     }
-  }, [initialQuery, activePatientId, autoSentInitial, sendMessageText]);
+  }, [initialQuery, activePatientId, sessionsLoaded, sendMessageText]);
 
   async function handleNewChat() {
     if (!activePatientId) return;
@@ -348,6 +357,11 @@ function AskCadieContent() {
         </div>
 
         {/* Chat Composer */}
+        {chatError && (
+          <div className="mt-2 rounded-xl border border-[#8E2C5A]/40 bg-[#8E2C5A]/10 px-3 py-2 text-xs text-[#8E2C5A]">
+            {chatError}
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="mt-4 pt-3 border-t border-[var(--border-clay)] flex items-center gap-2">
           <input
             type="text"

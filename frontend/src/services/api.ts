@@ -48,6 +48,12 @@ async function fetchJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     headers.set("Authorization", `Bearer ${token}`);
   }
   const resp = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
+  if (resp.status === 401 && !path.startsWith("/api/v1/auth/")) {
+    setStoredToken(null);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new Event("glycadence:unauthorized"));
+    }
+  }
   if (!resp.ok) {
     let message = `Request failed (${resp.status})`;
     try {

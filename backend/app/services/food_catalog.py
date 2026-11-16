@@ -15,8 +15,27 @@ from sqlalchemy.orm import Session
 from app.models.v2 import FoodItem, Recipe, RecipeIngredient
 
 
+_LOCAL_IMAGE_MAP = {
+    "Masala_Omelette.jpg": "/images/meals/omelette_roti.jpg",
+    "Aloo_paratha.jpg": "/images/meals/omelette_roti.jpg",
+    "Roti_%2C_Chany_ki_Dal_and_Salad_with_cut_Onion_and_Tomatoes.jpg": "/images/meals/daal_roti.jpg",
+    "Indian_Fruit_Chaat.jpg": "/images/meals/chana_chaat.jpg",
+    "Chana_masala.jpg": "/images/meals/daal_roti.jpg",
+    "Chana_Chaat.jpg": "/images/meals/chana_chaat.jpg",
+    "Raita_with_cucumber_and_mint.jpg": "/images/meals/chana_chaat.jpg",
+    "Chicken_Tikka.jpg": "/images/meals/chicken_tikka.jpg",
+    "Palak_Paneer_%26_Methi_Roti.jpg": "/images/meals/daal_roti.jpg",
+    "Bhindi_Masala.jpg": "/images/meals/daal_roti.jpg",
+    "Tandoori_roti_and_chole.jpg": "/images/meals/daal_roti.jpg",
+    "Pakistani_biryani.jpg": "/images/meals/biryani.jpg",
+    "Chicken_Karahi_in_Pakistan.jpg": "/images/meals/karahi_roti.jpg",
+    "Beef_Korma.JPG": "/images/meals/karahi_roti.jpg",
+    "Beef_Nihari.JPG": "/images/meals/karahi_roti.jpg",
+}
+
+
 def _wm(filename: str) -> str:
-    return f"https://commons.wikimedia.org/wiki/Special:FilePath/{filename}?width=800"
+    return _LOCAL_IMAGE_MAP.get(filename, "/images/meals/daal_roti.jpg")
 
 
 # Per-100g nutrient reference values from USDA FoodData Central / curated Pakistani composition
@@ -600,6 +619,9 @@ def ensure_food_and_recipe_catalog(db: Session) -> dict[str, Recipe]:
     existing_recipes = {r.slug: r for r in db.scalars(select(Recipe)).all()}
     for rdef in RECIPE_DEFS:
         if rdef["slug"] in existing_recipes:
+            existing_r = existing_recipes[rdef["slug"]]
+            if existing_r.image_url != rdef["image_url"]:
+                existing_r.image_url = rdef["image_url"]
             continue
         recipe = Recipe(
             slug=rdef["slug"],
