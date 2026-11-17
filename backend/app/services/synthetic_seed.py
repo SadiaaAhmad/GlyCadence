@@ -364,7 +364,7 @@ def ensure_v2_demo_environment(db: Session, *, force_regenerate: bool = False) -
     recipes = ensure_food_and_recipe_catalog(db)
     now_utc = datetime.now(timezone.utc)
 
-    # 1. SYNTH-DEMO-001 (Amina Khan)
+    # 1. SYNTH-DEMO-001 (Sadia Ahmad)
     p1 = db.scalar(
         select(Patient).where(Patient.cohort_type == "synthetic_demo", Patient.external_id == "SYNTH-DEMO-001")
     )
@@ -374,7 +374,7 @@ def ensure_v2_demo_environment(db: Session, *, force_regenerate: bool = False) -
             cohort_type="synthetic_demo",
             external_id="SYNTH-DEMO-001",
             source_dataset="synthetic_demo",
-            display_name="Amina Khan (T2D Oral Regimen)",
+            display_name="Sadia Ahmad (T2D Oral Regimen)",
             diabetes_type="T2D",
             age=54,
             sex="female",
@@ -386,11 +386,14 @@ def ensure_v2_demo_environment(db: Session, *, force_regenerate: bool = False) -
         db.flush()
         _build_cgm_and_meals_for_patient(db, p1, recipes, is_insulin_demo=False, base_end=now_utc)
     else:
+        if p1.display_name.startswith("Amina Khan"):
+            p1.display_name = "Sadia Ahmad (T2D Oral Regimen)"
+            db.commit()
         has_link = db.scalar(
             select(MealFoodLink).join(Meal, MealFoodLink.meal_id == Meal.id).where(Meal.patient_id == p1.id)
         )
         if force_regenerate or has_link is None:
-            p1.display_name = "Amina Khan (T2D Oral Regimen)"
+            p1.display_name = "Sadia Ahmad (T2D Oral Regimen)"
             p1.timezone = "Asia/Karachi"
             _reset_patient_observations(db, p1.id)
             _build_cgm_and_meals_for_patient(db, p1, recipes, is_insulin_demo=False, base_end=now_utc)
