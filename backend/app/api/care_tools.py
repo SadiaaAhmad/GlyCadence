@@ -113,6 +113,44 @@ def get_today_overview(
     rhy_card = next((c for c in rhy.get("cards", []) if c.get("type") == "glucose_summary_card"), {})
     meal_cards = [c for c in plt.get("cards", []) if c.get("type") == "meal_card"]
 
+    # Dynamic slot + window based on local time (PKT UTC+5)
+    from datetime import timedelta
+    local_now = datetime.now(timezone.utc) + timedelta(hours=5)
+    hr = local_now.hour
+    if hr < 11:
+        cur_slot, cur_win = "breakfast", "8:00 AM – 9:00 AM"
+    elif hr < 16:
+        cur_slot, cur_win = "lunch", "1:00 PM – 2:00 PM"
+    elif hr < 18:
+        cur_slot, cur_win = "snack", "4:30 PM – 5:30 PM"
+    else:
+        cur_slot, cur_win = "dinner", "7:30 PM – 8:30 PM"
+
+    slot_meal = next((c for c in meal_cards if c.get("slot") == cur_slot), meal_cards[0] if meal_cards else None)
+
+    today_utc_date = datetime.now(timezone.utc).date()
+    today_med_ev = next((e for e in med_events if e.event_time.date() == today_utc_date), None)
+    if not meds:
+        med_title, med_win = "Add your medicines", "Tap Medicines to track doses"
+    elif today_med_ev:
+        med_title = meds[0].medication_name
+        med_win = f"Today: {today_med_ev.status} ({meds[0].prescribed_schedule or 'scheduled'})"
+    else:
+        med_title = meds[0].medication_name
+        med_win = meds[0].prescribed_schedule or "Due today"
+
+    today_wb = next((w for w in wellbeing if w.logged_at.date() == today_utc_date), None)
+    if today_wb:
+        wb_title = (today_wb.mood_notes[:42] + "…") if today_wb.mood_notes and len(today_wb.mood_notes) > 42 else (today_wb.mood_notes or "Checked in today")
+        wb_win = (
+            f"Stress {today_wb.stress_score}/5 · Fatigue {today_wb.fatigue_score}/5"
+            if today_wb.stress_score and today_wb.fatigue_score
+            else "Saved for your doctor report"
+        )
+    else:
+        wb_title = "Daily mood & stress check-in"
+        wb_win = f"Not logged today · {len(wellbeing)} total logged"
+
     greeting_line = (
         rhy["findings"][1]["rendered_text"]
         if len(rhy.get("findings", [])) > 1
@@ -126,20 +164,20 @@ def get_today_overview(
         "hero": rhy_card,
         "next_up": [
             {
-                "slot": "Next Meal",
-                "title": meal_cards[0]["name"] if meal_cards else "Balanced desi lunch",
-                "window": "1:00 PM – 2:00 PM",
-                "recipe_id": meal_cards[0]["recipe_id"] if meal_cards else None,
+                "slot": f"Next {cur_slot.title()}",
+                "title": slot_meal["name"] if slot_meal else f"Balanced {cur_slot}",
+                "window": cur_win,
+                "recipe_id": slot_meal["recipe_id"] if slot_meal else None,
             },
             {
                 "slot": "Next Medicine",
-                "title": meds[0].medication_name if meds else "Daily medicines",
-                "window": meds[0].prescribed_schedule if meds else "With meal",
+                "title": med_title,
+                "window": med_win,
             },
             {
                 "slot": "Wellbeing",
-                "title": "20-second check-in",
-                "window": f"{len(wellbeing)} day(s) logged",
+                "title": wb_title,
+                "window": wb_win,
             },
         ],
         "featured_suggestion": plt["findings"][0]["rendered_text"] if plt.get("findings") else "",
@@ -495,10 +533,33 @@ def get_visit_report(
         for w in sorted(wellbeing, key=lambda x: x.logged_at, reverse=True)[:5]
     ]
 
+    personal_summary = [f["rendered_text"] for f in rhy.get("findings", [])[:4]]
+    if wellbeing_notes:
+        latest_wb = wellbeing_notes[0]
+        wb_parts = []
+        if latest_wb["stress_level"] is not None:
+            wb_parts.append(f"stress {latest_wb['stress_level']}/5")
+        if latest_wb["fatigue_level"] is not None:
+            wb_parts.append(f"fatigue {latest_wb['fatigue_level']}/5")
+        if latest_wb["sleep_hours"] is not None:
+            wb_parts.append(f"sleep {latest_wb['sleep_hours']}h")
+        if latest_wb["notes"]:
+            wb_parts.append(f"note: \"{latest_wb['notes'][:120]}\"")
+        if wb_parts:
+            personal_summary.append("Mental & physical wellbeing: " + ", ".join(wb_parts) + ".")
+
+        if not any("stress" in q.get("question", "").lower() or "mental" in q.get("question", "").lower() or "distress" in q.get("question", "").lower() for q in questions):
+            questions.append(
+                {
+                    "question": "My recent wellbeing logs show emotional stress or fatigue alongside my daily glucose — could diabetes distress or sleep be affecting my readings, and what support options do you recommend?",
+                    "why": "Mental stress hormones (cortisol) and diabetes burnout can directly influence daily blood sugar and self-care energy.",
+                }
+            )
+
     payload = {
         "patient_id": str(patient.id),
         "display_name": patient.display_name,
-        "personal_summary": [f["rendered_text"] for f in rhy.get("findings", [])[:4]],
+        "personal_summary": personal_summary,
         "metrics": rhy_card,
         "medications": [f"{m.medication_name} {m.recorded_dose or ''} ({m.prescribed_schedule or ''})" for m in meds],
         "questions": questions,
@@ -525,13 +586,19 @@ def get_visit_report(
         q_html = "".join(f"<li><strong>{q['question']}</strong><br/><small>Why: {q['why']}</small></li>" for q in questions)
         m_html = "".join(f"<li>{m}</li>" for m in payload["medications"])
         s_html = "".join(f"<li>{s}</li>" for s in payload["personal_summary"])
+        wb_html = "".join(
+            f"<li>{w['recorded_at'][:10]}: {w['notes'] or ''} "
+            f"(Stress {w['stress_level'] or '-'}/5, Fatigue {w['fatigue_level'] or '-'}/5, Sleep {w['sleep_hours'] or '-'}h)</li>"
+            for w in wellbeing_notes
+        ) or "<li>No recent wellbeing notes logged.</li>"
         html = f"""<!doctype html>
 <html><head><meta charset="utf-8"/><title>GlyCadence Visit Report — {patient.display_name}</title>
 <style>body{{font-family:Inter,system-ui,sans-serif;max-width:760px;margin:32px auto;color:#2B1E2F;line-height:1.5}}
 h1{{color:#2B1E2F;border-bottom:2px solid #F2A93B;padding-bottom:8px}}ul{{padding-left:20px}}li{{margin-bottom:8px}}
 .box{{background:#FBF6EF;border:1px solid #E9DCCB;border-radius:12px;padding:16px;margin:16px 0}}</style></head>
 <body><h1>GlyCadence Clinician Visit Report</h1><p><strong>Patient:</strong> {patient.display_name}</p>
-<div class="box"><h2>Recent Glucose Summary</h2><ul>{s_html}</ul></div>
+<div class="box"><h2>Recent Glucose &amp; Wellbeing Summary</h2><ul>{s_html}</ul></div>
+<div class="box"><h2>Mental &amp; Physical Wellbeing Notes (Kindred)</h2><ul>{wb_html}</ul></div>
 <div class="box"><h2>Active Medicines</h2><ul>{m_html}</ul></div>
 <div class="box"><h2>Questions for This Visit</h2><ol>{q_html}</ol></div>
 <p><small>Cohort: {patient.cohort_type} | Source: {patient.source_dataset} | Non-diagnostic summary</small></p></body></html>"""

@@ -109,6 +109,7 @@ export function PatientProvider({ children }: { children: React.ReactNode }) {
       }
       const tok = await apiClient.login(email, password);
       setToken(tok);
+      window.dispatchEvent(new Event("gc-show-splash"));
     } catch (err) {
       setAuthError(err instanceof Error ? err.message : "Could not sign in");
     } finally {
