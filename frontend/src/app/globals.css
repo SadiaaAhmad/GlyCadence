@@ -136,3 +136,62 @@ body {
   opacity: 0;
   animation: gc-word-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) 0.55s forwards;
 }
+
+@keyframes gc-eye-wink {
+  0%, 32%, 52%, 100% {
+    transform: scaleY(1);
+  }
+  40%, 46% {
+    transform: scaleY(0.08);
+  }
+}
+
+@keyframes gc-arm-wave {
+  0%, 42% {
+    transform: rotate(0deg);
+  }
+  52% {
+    transform: rotate(38deg);
+  }
+  62% {
+    transform: rotate(12deg);
+  }
+  72% {
+    transform: rotate(40deg);
+  }
+  82% {
+    transform: rotate(14deg);
+  }
+  92%, 100% {
+    transform: rotate(0deg);
+  }
+}
+
+@keyframes gc-sparkle-pop {
+  0%, 100% {
+    transform: scale(0.9) rotate(0deg);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.18) rotate(12deg);
+    opacity: 1;
+  }
+}
+
+.animate-gc-wink {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: gc-eye-wink 2.6s ease-in-out forwards;
+}
+
+.animate-gc-wave {
+  transform-box: fill-box;
+  transform-origin: 18% 22%;
+  animation: gc-arm-wave 2.8s ease-in-out forwards;
+}
+
+.animate-gc-sparkle {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: gc-sparkle-pop 1.5s ease-in-out infinite;
+}
