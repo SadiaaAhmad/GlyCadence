@@ -43,94 +43,44 @@ export function SplashIntro() {
       }`}
     >
       <div key={animKey} className="flex flex-col items-center">
-        <div className="relative flex flex-col items-center">
-          {/* Animated faithful SVG of the GlyCadence mascot: bounce -> wink -> arm wave */}
+        {/* Exact original logo PNG kept completely still, with 1:1 eye-wink & upward-hand-wave overlay */}
+        <div className="relative h-32 w-32 select-none">
+          <img
+            src="/glycadence-logo.png"
+            alt="GlyCadence"
+            className="h-full w-full object-contain"
+          />
           <svg
-            viewBox="0 0 200 210"
-            className="animate-gc-mascot h-36 w-36 select-none overflow-visible"
-            aria-label="GlyCadence mascot waving and winking"
-            role="img"
+            viewBox="0 0 300 305"
+            className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+            aria-hidden="true"
           >
-            {/* Top-right 4-point sparkle */}
-            <path
-              className="animate-gc-sparkle"
-              d="M160 18 L164 31 L177 35 L164 39 L160 52 L156 39 L143 35 L156 31 Z"
-              fill="#EF4444"
-            />
-
-            {/* Left leg */}
-            <path
-              d="M84 152 L84 182 Q84 188 72 188 Q66 188 66 183 Q66 178 75 178 L75 152 Z"
-              fill="#D93226"
-            />
-            {/* Right leg */}
-            <path
-              d="M114 152 L114 182 Q114 188 126 188 Q132 188 132 183 Q132 178 123 178 L123 152 Z"
-              fill="#D93226"
-            />
-
-            {/* Left arm */}
-            <path
-              d="M58 118 Q40 132 34 148"
-              stroke="#D93226"
-              strokeWidth="10"
-              strokeLinecap="round"
-              fill="none"
-            />
-
-            {/* Right arm (waves happily after the wink!) */}
-            <g className="animate-gc-wave">
+            {/* Gentle single wink over the right eye */}
+            <g className="animate-gc-wink-once">
+              <ellipse cx="188" cy="129" rx="16" ry="16" fill="rgb(249, 80, 65)" />
               <path
-                d="M142 118 Q160 130 166 146"
-                stroke="#EF4444"
-                strokeWidth="10"
+                d="M 175 131 Q 188 121 200 131"
+                stroke="#18181B"
+                strokeWidth="4.2"
                 strokeLinecap="round"
                 fill="none"
               />
             </g>
 
-            {/* Droplet body with subtle left-side shading */}
-            <path
-              d="M100 18 C100 18 46 74 46 116 C46 146 70 164 100 164 C130 164 154 146 154 116 C154 74 100 18 100 18 Z"
-              fill="#EF4444"
-            />
-            <path
-              d="M100 18 C100 18 46 74 46 116 C46 146 70 164 100 164 C80 156 64 138 64 114 C64 82 88 42 100 18 Z"
-              fill="#DC2626"
-              opacity="0.32"
-            />
-            {/* Gloss highlight */}
-            <path
-              d="M112 38 Q125 50 132 64"
-              stroke="#FCA5A5"
-              strokeWidth="5"
-              strokeLinecap="round"
-              fill="none"
-              opacity="0.7"
-            />
-
-            {/* Left eye */}
-            <g>
-              <ellipse cx="86" cy="108" rx="11" ry="12.5" fill="#FFFFFF" />
-              <circle cx="88.5" cy="106.5" r="6.2" fill="#0F172A" />
+            {/* Hide static lower right arm and raise a matching arm upwards to wave */}
+            <g className="animate-gc-wave-show">
+              <rect x="217" y="177" width="32" height="50" rx="10" fill="var(--bg-page)" />
+              <g className="animate-gc-hand-up">
+                <path
+                  d="M 220 178 Q 246 156 254 132"
+                  stroke="rgb(223, 56, 35)"
+                  strokeWidth="15"
+                  strokeLinecap="round"
+                  fill="none"
+                />
+              </g>
             </g>
-
-            {/* Right eye (winks!) */}
-            <g className="animate-gc-wink">
-              <ellipse cx="118" cy="104" rx="11" ry="12.5" fill="#FFFFFF" />
-              <circle cx="120.5" cy="102.5" r="6.2" fill="#0F172A" />
-            </g>
-
-            {/* Cute smile */}
-            <path
-              d="M97 121 Q105 128 113 120"
-              stroke="#0F172A"
-              strokeWidth="3.5"
-              strokeLinecap="round"
-              fill="none"
-            />
           </svg>
-          <div className="animate-gc-shadow mt-1 h-2.5 w-16 rounded-full bg-[#EF4444]/35 blur-[3px]" />
         </div>
 
         <div className="animate-gc-word mt-4 text-center">
@@ -140,12 +90,6 @@ export function SplashIntro() {
           <p className="mt-1 text-xs font-medium tracking-wide text-[var(--text-muted)]">
             Your daily diabetes companion
           </p>
-        </div>
-
-        <div className="animate-gc-word mt-5 flex items-center gap-1.5">
-          <span className="h-1.5 w-1.5 rounded-full bg-[#EF4444] animate-bounce [animation-delay:0ms]" />
-          <span className="h-1.5 w-1.5 rounded-full bg-[#EF4444]/70 animate-bounce [animation-delay:150ms]" />
-          <span className="h-1.5 w-1.5 rounded-full bg-[#EF4444]/40 animate-bounce [animation-delay:300ms]" />
         </div>
       </div>
     </div>
