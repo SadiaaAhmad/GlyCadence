@@ -3,31 +3,31 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 :root {
-  --bg-page: #faf9f6;
+  --bg-page: #fdf6fe;
   --bg-card: #ffffff;
-  --bg-muted: #f2f0ec;
-  --text-ink: #18181b;
-  --text-main: #18181b;
-  --text-muted: #64748b;
-  --border-clay: #e5e2dc;
-  --cadie-coral: #ef4444;
-  --saffron: #d97706;
-  --terracotta: #dc2626;
-  --berry: #9f1239;
+  --bg-muted: #f7d9fc;
+  --text-ink: #25104d;
+  --text-main: #25104d;
+  --text-muted: #5b1c2e;
+  --border-clay: #e5c3ec;
+  --cadie-coral: #c2286b;
+  --saffron: #fab940;
+  --terracotta: #c2286b;
+  --berry: #5b1c2e;
 }
 
 .dark {
-  --bg-page: #0d1015;
-  --bg-card: #151921;
-  --bg-muted: #1e2430;
-  --text-ink: #f4f4f5;
-  --text-main: #f4f4f5;
-  --text-muted: #94a3b8;
-  --border-clay: #262c38;
-  --cadie-coral: #ef4444;
-  --saffron: #f59e0b;
-  --terracotta: #f87171;
-  --berry: #fb7185;
+  --bg-page: #25104d;
+  --bg-card: #3b132b;
+  --bg-muted: #5b1c2e;
+  --text-ink: #f7d9fc;
+  --text-main: #f7d9fc;
+  --text-muted: #e3bce9;
+  --border-clay: #78284a;
+  --cadie-coral: #c2286b;
+  --saffron: #fab940;
+  --terracotta: #fab940;
+  --berry: #f7d9fc;
 }
 
 body {
