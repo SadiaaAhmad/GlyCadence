@@ -58,11 +58,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 className={cn(
                   "flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition-colors",
                   active
-                    ? "bg-[#C2286B]/15 text-[#C2286B] dark:bg-[#FAB940] dark:text-[#25104D] font-semibold"
+                    ? "bg-[#EF4444]/12 text-[#EF4444] font-semibold"
                     : "text-[var(--text-muted)] hover:bg-[var(--bg-muted)] hover:text-[var(--text-ink)]"
                 )}
               >
-                <Icon className={cn("h-4 w-4 shrink-0", active && "text-[#C2286B] dark:text-[#25104D]")} />
+                <Icon className={cn("h-4 w-4 shrink-0", active && "text-[#EF4444]")} />
                 <span>{tab.label}</span>
               </Link>
             );
